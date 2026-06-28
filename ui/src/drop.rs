@@ -48,7 +48,7 @@ pub fn tile_size_for(path: &Path, scale: u8) -> u32 {
         return 256;
     };
     let max_side = img.width().max(img.height());
-    let aligned = ((max_side + 31) / 32) * 32;
+    let aligned = max_side.div_ceil(32) * 32;
     let cap = match scale {
         4 => 256,
         3 => 384,

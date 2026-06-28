@@ -69,10 +69,7 @@ impl UpscaleApp {
         matches!(
             self.run_state,
             RunState::Idle | RunState::Done | RunState::Error(_)
-        ) && self
-            .worker
-            .as_ref()
-            .is_none_or(|w| !w.is_running())
+        ) && self.worker.as_ref().is_none_or(|w| !w.is_running())
             && self.paths.is_ok()
             && self.queue.iter().any(|q| !q.done && !q.failed)
     }
@@ -289,11 +286,8 @@ impl UpscaleApp {
             0.0
         };
         let hover_t = ctx.animate_value_with_time(response.id, hover_target, 0.18);
-        let border = crate::theme::lerp_color(
-            NothingTheme::BORDER,
-            NothingTheme::BORDER_VISIBLE,
-            hover_t,
-        );
+        let border =
+            crate::theme::lerp_color(NothingTheme::BORDER, NothingTheme::BORDER_VISIBLE, hover_t);
 
         ui.painter().rect_filled(rect, 0.0, NothingTheme::SURFACE);
         ui.painter()
@@ -326,13 +320,13 @@ impl UpscaleApp {
                         egui::pos2(rect.left(), rect.bottom() - bar_h),
                         egui::pos2(rect.right(), rect.bottom()),
                     );
-                    ui.painter()
-                        .rect_filled(label_rect, 0.0, NothingTheme::BLACK.gamma_multiply(0.85));
+                    ui.painter().rect_filled(
+                        label_rect,
+                        0.0,
+                        NothingTheme::BLACK.gamma_multiply(0.85),
+                    );
                     ui.painter().line_segment(
-                        [
-                            label_rect.left_top(),
-                            label_rect.right_top(),
-                        ],
+                        [label_rect.left_top(), label_rect.right_top()],
                         Stroke::new(1.0, NothingTheme::BORDER),
                     );
                     ui.painter().text(
@@ -406,8 +400,12 @@ impl UpscaleApp {
         }
         ui.add_space(SPACE_MD);
         ui.horizontal(|ui| {
-            self.icons
-                .show(ui, Icon::Queue, NothingTheme::ICON_SIZE, NothingTheme::TEXT_SECONDARY);
+            self.icons.show(
+                ui,
+                Icon::Queue,
+                NothingTheme::ICON_SIZE,
+                NothingTheme::TEXT_SECONDARY,
+            );
             ui.add_space(6.0);
             label_caps(ui, &format!("QUEUE · {}", self.queue.len()));
         });
@@ -520,12 +518,8 @@ impl eframe::App for UpscaleApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    self.icons.show(
-                        ui,
-                        Icon::MagicWand,
-                        22.0,
-                        NothingTheme::TEXT_DISPLAY,
-                    );
+                    self.icons
+                        .show(ui, Icon::MagicWand, 22.0, NothingTheme::TEXT_DISPLAY);
                     ui.add_space(SPACE_SM);
                     ui.label(
                         egui::RichText::new("Loku")
@@ -604,11 +598,8 @@ impl eframe::App for UpscaleApp {
                 let cta_width = ui.available_width();
                 if let Some(target) = progress {
                     // Ease the displayed value so tile-by-tile jumps glide.
-                    let frac = ctx.animate_value_with_time(
-                        egui::Id::new("loku_progress"),
-                        target,
-                        0.25,
-                    );
+                    let frac =
+                        ctx.animate_value_with_time(egui::Id::new("loku_progress"), target, 0.25);
                     progress_bar(ui, frac, cta_width);
                     ui.add_space(SPACE_MD);
                     ui.horizontal(|ui| {
@@ -632,8 +623,7 @@ impl eframe::App for UpscaleApp {
                             .color(NothingTheme::TEXT_SECONDARY),
                         );
                     });
-                } else if run_button(ui, &self.icons, self.run_button_state(), 0.0, cta_width)
-                    .clicked()
+                } else if run_button(ui, &self.icons, self.run_button_state(), cta_width).clicked()
                 {
                     self.start_run();
                 }

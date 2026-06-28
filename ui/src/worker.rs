@@ -53,11 +53,6 @@ impl WorkerHandle {
             }
         }
     }
-
-    #[allow(dead_code)]
-    pub fn done(&self) -> bool {
-        self.join.is_none() && self.progress.lock().unwrap().finished
-    }
 }
 
 impl Drop for WorkerHandle {
@@ -127,7 +122,7 @@ pub fn spawn_worker(
                     "-s",
                     &scale.to_string(),
                     "-f",
-                    format.cli_flag(),
+                    format.ext(),
                     "-m",
                     &models.to_string_lossy(),
                     "-t",
@@ -169,15 +164,12 @@ pub fn spawn_worker(
                 let mut reader = std::io::BufReader::new(stderr);
                 let mut line = Vec::new();
                 let mut byte = [0u8; 1];
-                let mut last_msg = String::new();
                 while let Ok(1) = reader.read(&mut byte) {
                     if byte[0] == b'\r' || byte[0] == b'\n' {
                         if !line.is_empty() {
                             let text = String::from_utf8_lossy(&line);
                             if let Some(pct) = parse_percent(&text) {
                                 progress_clone.lock().unwrap().image_percent = pct;
-                            } else {
-                                last_msg = text.trim().to_string();
                             }
                             line.clear();
                         }
@@ -185,7 +177,6 @@ pub fn spawn_worker(
                         line.push(byte[0]);
                     }
                 }
-                let _ = last_msg;
             }
 
             // Reclaim the child to wait on it. If a shutdown already took and

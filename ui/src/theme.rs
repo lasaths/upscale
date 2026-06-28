@@ -1,5 +1,8 @@
 use crate::icons::Icon;
-use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId, Margin, Rounding, Stroke, Vec2, Visuals};
+use eframe::egui::{
+    self, Color32, FontData, FontDefinitions, FontFamily, FontId, Margin, Rounding, Stroke, Vec2,
+    Visuals,
+};
 
 pub struct NothingTheme;
 
@@ -27,7 +30,7 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
         return s.to_string();
     }
     let keep = max - 1;
-    let head = (keep + 1) / 2;
+    let head = keep.div_ceil(2);
     let tail = keep - head;
     let head_s: String = chars[..head].iter().collect();
     let tail_s: String = chars[chars.len() - tail..].iter().collect();
@@ -139,7 +142,12 @@ pub fn setting_row<R>(
             Vec2::new(LABEL_COL, 44.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                icons.show(ui, icon, NothingTheme::ICON_SIZE, NothingTheme::TEXT_SECONDARY);
+                icons.show(
+                    ui,
+                    icon,
+                    NothingTheme::ICON_SIZE,
+                    NothingTheme::TEXT_SECONDARY,
+                );
                 ui.add_space(6.0);
                 label_caps(ui, label);
             },
@@ -214,7 +222,6 @@ pub fn run_button(
     ui: &mut egui::Ui,
     icons: &crate::icons::Icons,
     state: RunButtonState,
-    spin: f32,
     width: f32,
 ) -> egui::Response {
     let enabled = matches!(state, RunButtonState::Ready);
@@ -255,7 +262,9 @@ pub fn run_button(
 
     // Subtle hover feedback (color shift), only when actionable.
     let hover_target = if enabled && resp.hovered() { 1.0 } else { 0.0 };
-    let t = ui.ctx().animate_value_with_time(resp.id, hover_target, 0.12);
+    let t = ui
+        .ctx()
+        .animate_value_with_time(resp.id, hover_target, 0.12);
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -275,11 +284,9 @@ pub fn run_button(
     // Center the icon + label as one optical group regardless of button width.
     let icon_d = 14.0;
     let gap = 10.0;
-    let galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        NothingTheme::font_button(),
-        text_color,
-    );
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_string(), NothingTheme::font_button(), text_color);
     let label_w = galley.size().x;
     let group_w = icon_d + gap + label_w;
     let start_x = rect.center().x - group_w / 2.0;
@@ -290,11 +297,7 @@ pub fn run_button(
         egui::pos2(start_x + icon_d / 2.0, cy),
         icon_d,
         icon_tint,
-        if matches!(state, RunButtonState::Processing) {
-            spin
-        } else {
-            0.0
-        },
+        0.0,
     );
     ui.painter().galley(
         egui::pos2(start_x + icon_d + gap, cy - galley.size().y / 2.0),
