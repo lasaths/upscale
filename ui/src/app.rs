@@ -518,25 +518,38 @@ impl eframe::App for UpscaleApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    self.icons
-                        .show(ui, Icon::MagicWand, 22.0, NothingTheme::TEXT_DISPLAY);
-                    ui.add_space(SPACE_SM);
-                    ui.label(
-                        egui::RichText::new("Loku")
-                            .font(NothingTheme::font_display())
-                            .color(NothingTheme::TEXT_DISPLAY)
-                            .size(24.0),
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), 32.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            self.icons.show(
+                                ui,
+                                Icon::MagicWand,
+                                24.0,
+                                NothingTheme::TEXT_DISPLAY,
+                            );
+                            ui.add_space(SPACE_SM);
+                            ui.label(
+                                egui::RichText::new("Loku")
+                                    .font(NothingTheme::font_display())
+                                    .color(NothingTheme::TEXT_DISPLAY)
+                                    .size(24.0),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    self.icons.show(
+                                        ui,
+                                        Icon::Cpu,
+                                        NothingTheme::ICON_SIZE,
+                                        NothingTheme::TEXT_DISABLED,
+                                    );
+                                    ui.add_space(6.0);
+                                    label_caps(ui, "realesrgan");
+                                },
+                            );
+                        },
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.icons.show(
-                            ui,
-                            Icon::Cpu,
-                            NothingTheme::ICON_SIZE,
-                            NothingTheme::TEXT_DISABLED,
-                        );
-                        ui.add_space(6.0);
-                        label_caps(ui, "realesrgan");
-                    });
                 });
 
                 ui.add_space(SPACE_LG);
