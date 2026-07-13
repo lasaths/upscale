@@ -12,6 +12,8 @@ output/
 models/
 
 # tools: NCNN binary + models (extract locally, don't commit)
+tools/upscale/
+tools/.cache/
 tools/realesrgan-full/
 tools/wheels/
 tools/*.zip

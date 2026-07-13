@@ -1,7 +1,8 @@
 use crate::drop::{gpu_id, tile_size_for};
-use crate::models::{Model, OutputFormat};
+use crate::models::{Algorithm, UpscaleConfig};
+use crate::paths::Backend;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,8 +20,7 @@ pub struct WorkerProgress {
     pub error: Option<String>,
 }
 
-/// realesrgan-ncnn-vulkan prints lines like `12.50%` to stderr as each tile
-/// finishes. Pull the trailing percentage out of one such line.
+/// ncnn-vulkan backends print lines like `12.50%` to stderr as each tile finishes.
 fn parse_percent(line: &str) -> Option<f32> {
     let t = line.trim().strip_suffix('%')?;
     t.trim().parse::<f32>().ok()
@@ -29,8 +29,6 @@ fn parse_percent(line: &str) -> Option<f32> {
 pub struct WorkerHandle {
     progress: Arc<Mutex<WorkerProgress>>,
     cancel: Arc<AtomicBool>,
-    /// The currently-running backend process, so we can kill it on shutdown
-    /// instead of orphaning it when the window closes.
     child: Arc<Mutex<Option<Child>>>,
     join: Option<thread::JoinHandle<()>>,
 }
@@ -58,8 +56,6 @@ impl WorkerHandle {
 impl Drop for WorkerHandle {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
-        // Kill the live backend process so it doesn't outlive the app. This also
-        // unblocks the worker thread's stderr read so it can exit promptly.
         if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -70,13 +66,82 @@ impl Drop for WorkerHandle {
     }
 }
 
+pub fn build_cli_args(
+    backend: &Backend,
+    config: &UpscaleConfig,
+    input: &Path,
+    output: &Path,
+    tile: &str,
+    gpu: &str,
+) -> Vec<String> {
+    let model_dir = config.model_dir(&backend.models_root);
+    let scale = config.algorithm.clamp_scale(config.scale).to_string();
+
+    let mut args = vec![
+        "-i".into(),
+        input.to_string_lossy().into_owned(),
+        "-o".into(),
+        output.to_string_lossy().into_owned(),
+    ];
+
+    match config.algorithm {
+        Algorithm::RealEsrgan => {
+            if let Some(name) = config.variant.esrgan_cli_name() {
+                args.extend(["-n".into(), name.into()]);
+            }
+            args.extend([
+                "-s".into(),
+                scale,
+                "-f".into(),
+                config.format.ext().into(),
+                "-m".into(),
+                model_dir.to_string_lossy().into_owned(),
+            ]);
+        }
+        Algorithm::RealCugan | Algorithm::Waifu2x => {
+            args.extend([
+                "-s".into(),
+                scale,
+                "-n".into(),
+                config.denoise.cli_value().into(),
+                "-f".into(),
+                config.format.ext().into(),
+                "-m".into(),
+                model_dir.to_string_lossy().into_owned(),
+            ]);
+        }
+        Algorithm::RealSr => {
+            args.extend([
+                "-s".into(),
+                scale,
+                "-f".into(),
+                config.format.ext().into(),
+                "-m".into(),
+                model_dir.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+
+    args.extend([
+        "-t".into(),
+        tile.into(),
+        "-j".into(),
+        "1:1:1".into(),
+        "-g".into(),
+        gpu.into(),
+    ]);
+
+    if config.tta {
+        args.push("-x".into());
+    }
+
+    args
+}
+
 pub fn spawn_worker(
-    exe: PathBuf,
-    models: PathBuf,
+    backend: Backend,
     items: Vec<(PathBuf, PathBuf)>,
-    model: Model,
-    scale: u8,
-    format: OutputFormat,
+    config: UpscaleConfig,
 ) -> WorkerHandle {
     let progress = Arc::new(Mutex::new(WorkerProgress {
         total: items.len(),
@@ -108,30 +173,13 @@ pub fn spawn_worker(
                     .unwrap_or_default();
             }
 
-            let tile = tile_size_for(&input, scale).to_string();
+            let tile = tile_size_for(&input, config.algorithm.clamp_scale(config.scale))
+                .to_string();
             let gpu = gpu_id();
+            let args = build_cli_args(&backend, &config, &input, &output, &tile, &gpu);
 
-            let spawned = Command::new(&exe)
-                .args([
-                    "-i",
-                    &input.to_string_lossy(),
-                    "-o",
-                    &output.to_string_lossy(),
-                    "-n",
-                    model.cli_name(),
-                    "-s",
-                    &scale.to_string(),
-                    "-f",
-                    format.ext(),
-                    "-m",
-                    &models.to_string_lossy(),
-                    "-t",
-                    &tile,
-                    "-j",
-                    "1:1:1",
-                    "-g",
-                    &gpu,
-                ])
+            let spawned = Command::new(&backend.exe)
+                .args(&args)
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn();
@@ -148,8 +196,6 @@ pub fn spawn_worker(
             };
 
             let stderr = child.stderr.take();
-            // Publish the live child so a shutdown can kill it. If cancellation
-            // already fired in the spawn window, kill it right away.
             *child_clone.lock().unwrap() = Some(child);
             if cancel_clone.load(Ordering::SeqCst) {
                 if let Some(mut c) = child_clone.lock().unwrap().take() {
@@ -159,7 +205,6 @@ pub fn spawn_worker(
                 return;
             }
 
-            // Stream stderr; progress is emitted with `\r`, so split on both.
             if let Some(stderr) = stderr {
                 let mut reader = std::io::BufReader::new(stderr);
                 let mut line = Vec::new();
@@ -179,8 +224,6 @@ pub fn spawn_worker(
                 }
             }
 
-            // Reclaim the child to wait on it. If a shutdown already took and
-            // killed it, the slot is empty — stop quietly.
             let Some(mut child) = child_clone.lock().unwrap().take() else {
                 return;
             };
@@ -220,5 +263,119 @@ pub fn spawn_worker(
         cancel,
         child: child_slot,
         join: Some(join),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        Algorithm, RealCuganModel, RealEsrganModel, RealSrModel, Waifu2xModel,
+    };
+    use crate::paths::Backend;
+    use std::path::PathBuf;
+
+    fn test_backend() -> Backend {
+        Backend {
+            exe: PathBuf::from("/tmp/upscale/realesrgan-ncnn-vulkan"),
+            models_root: PathBuf::from("/tmp/upscale/models"),
+        }
+    }
+
+    #[test]
+    fn esrgan_args_include_model_name() {
+        let backend = test_backend();
+        let config = UpscaleConfig {
+            algorithm: Algorithm::RealEsrgan,
+            variant: Variant::RealEsrgan(RealEsrganModel::X4Net),
+            scale: 4,
+            format: OutputFormat::Png,
+            denoise: DenoiseLevel::Zero,
+            tta: false,
+        };
+        let args = build_cli_args(
+            &backend,
+            &config,
+            Path::new("/in.jpg"),
+            Path::new("/out.png"),
+            "256",
+            "0",
+        );
+        assert!(args.contains(&"-n".to_string()));
+        assert!(args.contains(&"realesrnet-x4plus".to_string()));
+        assert!(args.contains(&"-m".to_string()));
+        assert!(args.iter().any(|a| a.contains("realesrgan")));
+    }
+
+    #[test]
+    fn waifu2x_args_include_denoise() {
+        let backend = test_backend();
+        let config = UpscaleConfig {
+            algorithm: Algorithm::Waifu2x,
+            variant: Variant::Waifu2x(Waifu2xModel::Cunet),
+            scale: 2,
+            format: OutputFormat::Webp,
+            denoise: DenoiseLevel::One,
+            tta: true,
+        };
+        let args = build_cli_args(
+            &backend,
+            &config,
+            Path::new("/in.jpg"),
+            Path::new("/out.webp"),
+            "512",
+            "1",
+        );
+        assert!(args.contains(&"-n".to_string()));
+        assert!(args.contains(&"1".to_string()));
+        assert!(args.contains(&"-x".to_string()));
+        assert!(args.iter().any(|a| a.contains("models-cunet")));
+    }
+
+    #[test]
+    fn realsr_forces_4x_scale() {
+        let backend = test_backend();
+        let config = UpscaleConfig {
+            algorithm: Algorithm::RealSr,
+            variant: Variant::RealSr(RealSrModel::Df2k),
+            scale: 2,
+            format: OutputFormat::Jpg,
+            denoise: DenoiseLevel::Zero,
+            tta: false,
+        };
+        let args = build_cli_args(
+            &backend,
+            &config,
+            Path::new("/in.jpg"),
+            Path::new("/out.jpg"),
+            "256",
+            "0",
+        );
+        let s_idx = args.iter().position(|a| a == "-s").unwrap();
+        assert_eq!(args[s_idx + 1], "4");
+    }
+
+    #[test]
+    fn cugan_args() {
+        let backend = test_backend();
+        let config = UpscaleConfig {
+            algorithm: Algorithm::RealCugan,
+            variant: Variant::RealCugan(RealCuganModel::Se),
+            scale: 3,
+            format: OutputFormat::Png,
+            denoise: DenoiseLevel::Minus1,
+            tta: false,
+        };
+        let args = build_cli_args(
+            &backend,
+            &config,
+            Path::new("/in.jpg"),
+            Path::new("/out.png"),
+            "384",
+            "0",
+        );
+        assert!(args.contains(&"-n".to_string()));
+        assert!(args.contains(&"-1".to_string()));
+        assert!(args.iter().any(|a| a.contains("models-se")));
     }
 }

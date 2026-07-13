@@ -8,6 +8,9 @@ eframe = "0.29"
 rfd = "0.15"
 image = "0.25"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = true
 strip = true

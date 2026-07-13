@@ -1,10 +1,12 @@
 use crate::drop::{collect_paths, file_label, output_path_for};
 use crate::icons::{Icon, Icons};
-use crate::models::{Model, OutputFormat};
+use crate::models::{
+    on_algorithm_changed, Algorithm, DenoiseLevel, OutputFormat, UpscaleConfig, Variant,
+};
 use crate::paths::Paths;
 use crate::preview::PreviewCache;
 use crate::theme::{
-    label_caps, progress_bar, run_button, segmented, setting_row, truncate_middle, NothingTheme,
+    label_caps, progress_bar, run_button, segmented, setting_hint, setting_row, truncate_middle, NothingTheme,
     RunButtonState, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL,
 };
 use crate::worker::{spawn_worker, WorkerHandle};
@@ -29,8 +31,11 @@ pub enum RunState {
 pub struct UpscaleApp {
     paths: Result<Paths, String>,
     queue: Vec<QueueItem>,
-    model: Model,
+    algorithm: Algorithm,
+    variant: Variant,
     scale: u8,
+    denoise: DenoiseLevel,
+    tta: bool,
     format: OutputFormat,
     run_state: RunState,
     worker: Option<WorkerHandle>,
@@ -51,8 +56,11 @@ impl UpscaleApp {
         Self {
             paths: Paths::discover(),
             queue: Vec::new(),
-            model: Model::X4Plus,
+            algorithm: Algorithm::RealEsrgan,
+            variant: Algorithm::RealEsrgan.default_variant(),
             scale: 4,
+            denoise: DenoiseLevel::Zero,
+            tta: false,
             format: OutputFormat::default(),
             run_state: RunState::Idle,
             worker: None,
@@ -65,13 +73,46 @@ impl UpscaleApp {
         }
     }
 
+    fn backend_available(&self) -> bool {
+        self.paths
+            .as_ref()
+            .ok()
+            .and_then(|p| p.require(self.algorithm).ok())
+            .is_some()
+    }
+
     fn can_run(&self) -> bool {
         matches!(
             self.run_state,
             RunState::Idle | RunState::Done | RunState::Error(_)
         ) && self.worker.as_ref().is_none_or(|w| !w.is_running())
-            && self.paths.is_ok()
+            && self.backend_available()
             && self.queue.iter().any(|q| !q.done && !q.failed)
+    }
+
+    fn upscale_config(&self) -> UpscaleConfig {
+        UpscaleConfig {
+            algorithm: self.algorithm,
+            variant: self.variant,
+            scale: self.algorithm.clamp_scale(self.scale),
+            format: self.format,
+            denoise: self.denoise,
+            tta: self.tta,
+        }
+    }
+
+    fn available_algorithms(&self) -> Vec<(Algorithm, &'static str)> {
+        let Some(paths) = self.paths.as_ref().ok() else {
+            return Algorithm::ALL
+                .iter()
+                .map(|&a| (a, a.label()))
+                .collect();
+        };
+        Algorithm::ALL
+            .iter()
+            .filter(|&&a| paths.backends.get(a).is_some())
+            .map(|&a| (a, a.label()))
+            .collect()
     }
 
     fn is_processing(&self) -> bool {
@@ -152,6 +193,14 @@ impl UpscaleApp {
             return;
         };
 
+        let Ok(backend) = paths.require(self.algorithm).cloned() else {
+            self.status_message = Some(format!(
+                "[ERROR: {} not installed]",
+                self.algorithm.header_label()
+            ));
+            return;
+        };
+
         let pending: Vec<(PathBuf, PathBuf)> = self
             .queue
             .iter()
@@ -166,12 +215,9 @@ impl UpscaleApp {
         self.run_state = RunState::Running;
         self.status_message = None;
         self.worker = Some(spawn_worker(
-            paths.exe,
-            paths.models,
+            backend,
             pending,
-            self.model,
-            self.scale,
-            self.format,
+            self.upscale_config(),
         ));
     }
 
@@ -275,7 +321,12 @@ impl UpscaleApp {
         } else {
             0.0
         };
-        let reserve = 330.0 + queue_reserve;
+        let denoise_reserve = if self.algorithm.supports_denoise() {
+            44.0
+        } else {
+            0.0
+        };
+        let reserve = 490.0 + queue_reserve + denoise_reserve;
         let height = (available.y - reserve).clamp(200.0, (available.y * 0.72).max(200.0));
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(available.x, height), Sense::click_and_drag());
@@ -391,6 +442,32 @@ impl UpscaleApp {
 
         if response.clicked() && !self.is_processing() {
             self.open_file_dialog();
+        }
+    }
+
+    fn draw_algorithm_picker(&mut self, ui: &mut egui::Ui, settings_enabled: bool) {
+        let w = ui.available_width();
+        let options = self.available_algorithms();
+        if let Some(first) = options.first() {
+            if !options.iter().any(|(a, _)| *a == self.algorithm) {
+                self.algorithm = first.0;
+                on_algorithm_changed(
+                    self.algorithm,
+                    &mut self.scale,
+                    &mut self.variant,
+                    &mut self.denoise,
+                );
+            }
+            let prev = self.algorithm;
+            segmented(ui, &mut self.algorithm, &options, settings_enabled, w);
+            if self.algorithm != prev {
+                on_algorithm_changed(
+                    self.algorithm,
+                    &mut self.scale,
+                    &mut self.variant,
+                    &mut self.denoise,
+                );
+            }
         }
     }
 
@@ -545,7 +622,7 @@ impl eframe::App for UpscaleApp {
                                         NothingTheme::TEXT_DISABLED,
                                     );
                                     ui.add_space(6.0);
-                                    label_caps(ui, "realesrgan");
+                                    label_caps(ui, self.algorithm.header_label());
                                 },
                             );
                         },
@@ -558,33 +635,78 @@ impl eframe::App for UpscaleApp {
 
                 ui.add_space(SPACE_XL);
 
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(crate::theme::LABEL_COL, 44.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            self.icons.show(
+                                ui,
+                                Icon::Cpu,
+                                NothingTheme::ICON_SIZE,
+                                NothingTheme::TEXT_SECONDARY,
+                            );
+                            ui.add_space(6.0);
+                            label_caps(ui, "ENGINE");
+                        },
+                    );
+                    self.draw_algorithm_picker(ui, settings_enabled);
+                });
+                setting_hint(ui, self.algorithm.description());
+
+                ui.add_space(SPACE_SM);
                 setting_row(ui, &self.icons, Icon::Cpu, "MODEL", |ui| {
                     let w = ui.available_width();
-                    segmented(
-                        ui,
-                        &mut self.model,
-                        &[
-                            (Model::AnimeV3, "animev3"),
-                            (Model::X4Plus, "x4plus"),
-                            (Model::X4PlusAnime, "x4plus-anime"),
-                        ],
-                        settings_enabled,
-                        w,
-                    );
+                    let options = self.algorithm.variant_options();
+                    let mut picked = self.variant;
+                    segmented(ui, &mut picked, options, settings_enabled, w);
+                    self.variant = picked;
                 });
+                setting_hint(ui, self.variant.description());
 
                 ui.add_space(SPACE_SM);
                 setting_row(ui, &self.icons, Icon::ArrowsOut, "SCALE", |ui| {
                     let w = ui.available_width();
-                    let mut scale = self.scale;
+                    let scales: Vec<(u8, String)> = self
+                        .algorithm
+                        .valid_scales()
+                        .iter()
+                        .map(|&s| (s, s.to_string()))
+                        .collect();
+                    let scale_opts: Vec<(u8, &str)> = scales
+                        .iter()
+                        .map(|(v, l)| (*v, l.as_str()))
+                        .collect();
+                    let mut scale = self.algorithm.clamp_scale(self.scale);
+                    segmented(ui, &mut scale, &scale_opts, settings_enabled, w);
+                    self.scale = scale;
+                });
+
+                if self.algorithm.supports_denoise() {
+                    ui.add_space(SPACE_SM);
+                    setting_row(ui, &self.icons, Icon::Sparkle, "DENOISE", |ui| {
+                        let w = ui.available_width();
+                        let opts: Vec<(DenoiseLevel, &str)> = DenoiseLevel::ALL
+                            .iter()
+                            .map(|&d| (d, d.label()))
+                            .collect();
+                        segmented(ui, &mut self.denoise, &opts, settings_enabled, w);
+                    });
+                }
+
+                ui.add_space(SPACE_SM);
+                setting_row(ui, &self.icons, Icon::Sparkle, "TTA", |ui| {
+                    let w = ui.available_width();
+                    let mut tta_on = self.tta;
                     segmented(
                         ui,
-                        &mut scale,
-                        &[(2u8, "2"), (3, "3"), (4, "4")],
+                        &mut tta_on,
+                        &[(false, "OFF"), (true, "ON")],
                         settings_enabled,
                         w,
                     );
-                    self.scale = scale;
+                    self.tta = tta_on;
                 });
 
                 ui.add_space(SPACE_SM);

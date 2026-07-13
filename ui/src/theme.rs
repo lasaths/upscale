@@ -157,6 +157,18 @@ pub fn setting_row<R>(
     .inner
 }
 
+pub fn setting_hint(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_COL + 14.0);
+        ui.label(
+            egui::RichText::new(text)
+                .font(NothingTheme::font_body())
+                .color(NothingTheme::TEXT_DISABLED)
+                .size(11.5),
+        );
+    });
+}
+
 pub fn segmented<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     current: &mut T,
