@@ -11,7 +11,12 @@ pub struct Paths {
 impl Paths {
     pub fn discover() -> Result<Self, String> {
         let root = find_root()?;
-        let exe = root.join("tools/realesrgan-full/realesrgan-ncnn-vulkan.exe");
+        let exe_name = if cfg!(windows) {
+            "realesrgan-ncnn-vulkan.exe"
+        } else {
+            "realesrgan-ncnn-vulkan"
+        };
+        let exe = root.join("tools/realesrgan-full").join(exe_name);
         let models = root.join("tools/realesrgan-full/models");
 
         if !exe.is_file() {
@@ -32,7 +37,7 @@ impl Paths {
 fn find_root() -> Result<PathBuf, String> {
     if let Ok(env_root) = env::var("UPSCALE_ROOT") {
         let p = PathBuf::from(env_root);
-        if p.join("tools/realesrgan-full").is_dir() {
+        if p.is_dir() {
             return Ok(p);
         }
     }

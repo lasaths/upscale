@@ -58,7 +58,13 @@ pub fn tile_size_for(path: &Path, scale: u8) -> u32 {
 }
 
 pub fn gpu_id() -> String {
-    std::env::var("UPSCALE_GPU").unwrap_or_else(|_| "1".into())
+    std::env::var("UPSCALE_GPU").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "0".into()
+        } else {
+            "1".into()
+        }
+    })
 }
 
 #[cfg(test)]
