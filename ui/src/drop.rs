@@ -159,6 +159,128 @@ pub fn paste_clipboard_image() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Prefer clipboard image; else treat paste text as a local file path / file URL.
+pub fn paste_from_clipboard(paste_text: Option<&str>) -> Result<PathBuf, String> {
+    match paste_clipboard_image() {
+        Ok(path) => Ok(path),
+        Err(img_err) => {
+            if let Some(text) = paste_text.map(str::trim).filter(|t| !t.is_empty()) {
+                if let Some(path) = path_from_paste_text(text) {
+                    return Ok(path);
+                }
+            }
+            Err(img_err)
+        }
+    }
+}
+
+fn path_from_paste_text(text: &str) -> Option<PathBuf> {
+    let trimmed = text.trim().trim_matches('"');
+    let path = if let Some(rest) = trimmed.strip_prefix("file://") {
+        let decoded = urlencoding_decode(rest);
+        PathBuf::from(decoded)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if path.is_file() && is_image(&path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Minimal percent-decoding for file:// URLs (spaces as %20, etc.).
+fn urlencoding_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// egui-winit intercepts Cmd/Ctrl+V for text paste and drops the key when the
+/// clipboard is image-only. On macOS we catch ⌘V at AppKit before that happens.
+pub fn install_paste_hotkey() {
+    #[cfg(target_os = "macos")]
+    macos_paste::install();
+}
+
+pub fn take_paste_hotkey() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_paste::take();
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+#[cfg(target_os = "macos")]
+mod macos_paste {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static PASTE: AtomicBool = AtomicBool::new(false);
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    // US ANSI V; charactersIgnoringModifiers is the fallback for other layouts.
+    const KEYCODE_V: u16 = 9;
+
+    pub fn install() {
+        if INSTALLED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit delivers a live NSEvent pointer to the monitor.
+            let event_ref = unsafe { event.as_ref() };
+            if !event_ref.isARepeat() {
+                let cmd = event_ref
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags::Command);
+                let is_v = event_ref.keyCode() == KEYCODE_V
+                    || event_ref
+                        .charactersIgnoringModifiers()
+                        .is_some_and(|s| s.to_string().eq_ignore_ascii_case("v"));
+                if cmd && is_v {
+                    PASTE.store(true, Ordering::SeqCst);
+                }
+            }
+            event.as_ptr()
+        });
+        // SAFETY: block returns the same event pointer; mask is KeyDown-only.
+        // Forget the monitor handle so it lives for the process.
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
+                .expect("NSEvent paste monitor")
+        };
+        std::mem::forget(monitor);
+    }
+
+    pub fn take() -> bool {
+        PASTE.swap(false, Ordering::SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +324,16 @@ mod tests {
     fn sanitize_keeps_extension() {
         assert_eq!(sanitize_filename("photo.webp"), "photo.webp");
         assert_eq!(sanitize_filename("../../x.png"), "x.png");
+    }
+
+    #[test]
+    fn urlencoding_decodes_spaces() {
+        assert_eq!(urlencoding_decode("a%20b.png"), "a b.png");
+    }
+
+    #[test]
+    fn path_from_paste_rejects_missing() {
+        assert!(path_from_paste_text("/no/such/image.png").is_none());
+        assert!(path_from_paste_text("file:///no/such/image.png").is_none());
     }
 }

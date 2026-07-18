@@ -1,4 +1,7 @@
-use crate::drop::{collect_paths, file_label, ingest_bytes, output_path_for, paste_clipboard_image};
+use crate::drop::{
+    collect_paths, file_label, ingest_bytes, install_paste_hotkey, output_path_for,
+    paste_from_clipboard, take_paste_hotkey,
+};
 use crate::icons::{Icon, Icons};
 use crate::models::{
     on_algorithm_changed, Algorithm, DenoiseLevel, OutputFormat, UpscaleConfig, Variant,
@@ -67,6 +70,7 @@ impl UpscaleApp {
         NothingTheme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(NothingTheme::visuals());
         let icons = Icons::new(&cc.egui_ctx);
+        install_paste_hotkey();
 
         Self {
             paths: Paths::discover(),
@@ -503,8 +507,10 @@ impl UpscaleApp {
         let advanced_reserve = if self.show_advanced { 140.0 } else { 36.0 };
         let reserve = 430.0 + queue_reserve + advanced_reserve;
         let height = (available.y - reserve).clamp(200.0, (available.y * 0.72).max(200.0));
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(available.x, height), Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(available.x, height),
+            Sense::click().union(Sense::hover()),
+        );
 
         let hover_target = if self.drop_hovered || response.hovered() {
             1.0
@@ -615,8 +621,16 @@ impl UpscaleApp {
             );
         }
 
-        if response.clicked() && !self.is_processing() {
-            self.open_file_dialog();
+        if !self.is_processing() {
+            if response.clicked() {
+                self.open_file_dialog();
+            } else if response.secondary_clicked() {
+                // Right-click paste — works even when egui-winit swallows ⌘V.
+                match paste_from_clipboard(None) {
+                    Ok(path) => self.ingest_path(path),
+                    Err(err) => self.status_message = Some(err),
+                }
+            }
         }
     }
 
@@ -760,6 +774,10 @@ impl eframe::App for UpscaleApp {
             let mut dropped_paths = Vec::new();
             let mut dropped_bytes = Vec::new();
             let mut hovered = false;
+            let mut paste_text = None;
+            // egui-winit swallows Cmd/Ctrl+V for text clipboard reads and emits
+            // Event::Paste only when text exists — image-only pastes need the
+            // AppKit hotkey (macOS) or a secondary-click on the drop zone.
             let paste_shortcut = ctx.input(|i| {
                 hovered = !i.raw.hovered_files.is_empty();
                 for file in &i.raw.dropped_files {
@@ -771,26 +789,46 @@ impl eframe::App for UpscaleApp {
                         } else {
                             file.name.clone()
                         };
-                        dropped_bytes.push((bytes.clone(), name));
+                        dropped_bytes.push((bytes.clone().to_vec(), name));
                     }
                 }
-                i.modifiers.command && i.key_pressed(egui::Key::V)
+                for ev in &i.events {
+                    if let egui::Event::Paste(text) = ev {
+                        paste_text = Some(text.clone());
+                    }
+                }
+                let hotkey = take_paste_hotkey();
+                paste_text.is_some()
+                    || hotkey
+                    || i.key_pressed(egui::Key::Paste)
+                    || (i.modifiers.command && i.key_pressed(egui::Key::V))
             });
             self.drop_hovered = hovered;
+            let mut ingested = false;
             for path in dropped_paths {
                 self.ingest_path(path);
+                ingested = true;
             }
             for (bytes, name) in dropped_bytes {
                 match ingest_bytes(&bytes, &name) {
-                    Ok(path) => self.ingest_path(path),
+                    Ok(path) => {
+                        self.ingest_path(path);
+                        ingested = true;
+                    }
                     Err(err) => self.status_message = Some(err),
                 }
             }
             if paste_shortcut {
-                match paste_clipboard_image() {
-                    Ok(path) => self.ingest_path(path),
+                match paste_from_clipboard(paste_text.as_deref()) {
+                    Ok(path) => {
+                        self.ingest_path(path);
+                        ingested = true;
+                    }
                     Err(err) => self.status_message = Some(err),
                 }
+            }
+            if ingested {
+                ctx.request_repaint();
             }
         }
 
