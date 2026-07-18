@@ -24,7 +24,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/lasaths/upscale/re
 
 Or grab zips from [Releases](https://github.com/lasaths/upscale/releases). After install, run the setup script once to download ncnn engines (see Setup).
 
-> winget: not in the official catalog yet — use the PowerShell installer above. Say the word if you want a winget PR filed.
+> winget: not in the official catalog yet — use the PowerShell installer above for now.
 
 ## Requirements
 
