@@ -493,22 +493,20 @@ impl UpscaleApp {
         }
     }
 
-    fn draw_drop_zone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let available = ui.available_size();
-        // Reserve room for the queue (if shown), settings strip, CTA and footer,
-        // then let the preview absorb whatever vertical space is left so the hero
-        // grows with the window instead of leaving dead space.
+    fn draw_drop_zone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, viewport_h: f32) {
+        let available_w = ui.available_width();
+        // Size the hero from the window viewport (not ScrollArea's unbounded height)
+        // so MORE options can overflow into scroll instead of crushing the preview.
         let queue_reserve = if !self.queue.is_empty() {
             40.0 + (self.queue.len().min(6) as f32) * 24.0
         } else {
             0.0
         };
-        // Advanced (denoise/TTA/format) lives behind MORE — keep hero tall by default.
         let advanced_reserve = if self.show_advanced { 140.0 } else { 36.0 };
         let reserve = 430.0 + queue_reserve + advanced_reserve;
-        let height = (available.y - reserve).clamp(200.0, (available.y * 0.72).max(200.0));
+        let height = (viewport_h - reserve).clamp(160.0, (viewport_h * 0.72).max(160.0));
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(available.x, height),
+            Vec2::new(available_w, height),
             Sense::click().union(Sense::hover()),
         );
 
@@ -937,7 +935,19 @@ impl eframe::App for UpscaleApp {
                 });
 
                 ui.add_space(SPACE_LG);
-                self.draw_drop_zone(ui, ctx);
+
+                // Scrollable body + pinned status footer. Measure height first so the
+                // drop zone uses the viewport (not ScrollArea's unbounded height).
+                let footer_h = 28.0;
+                let scroll_h = (ui.available_height() - footer_h).max(120.0);
+                let viewport_h = scroll_h;
+
+                egui::ScrollArea::vertical()
+                    .id_salt("loku_main_scroll")
+                    .auto_shrink([false, false])
+                    .max_height(scroll_h)
+                    .show(ui, |ui| {
+                self.draw_drop_zone(ui, ctx, viewport_h);
                 self.draw_queue(ui);
 
                 // Suggest sits under the image — analyze first, then tweak settings.
@@ -1237,55 +1247,55 @@ impl eframe::App for UpscaleApp {
                         );
                     });
                 }
+                    }); // ScrollArea
 
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        let status_icon = if self.is_processing() {
-                            Icon::CircleNotch
-                        } else if matches!(self.run_state, RunState::Done) {
-                            Icon::Check
-                        } else if self.status_message.is_some()
-                            || matches!(self.run_state, RunState::Error(_))
-                            || self.paths.is_err()
-                        {
-                            Icon::Warning
-                        } else {
-                            Icon::Sparkle
-                        };
-                        let tint = if self.status_message.is_some()
-                            || matches!(self.run_state, RunState::Error(_))
-                            || self.paths.is_err()
-                        {
-                            NothingTheme::ACCENT
-                        } else {
-                            NothingTheme::TEXT_SECONDARY
-                        };
-                        let icon_sz = NothingTheme::ICON_SIZE
-                            * (1.0 + 0.22 * self.done_pulse * self.done_pulse);
-                        let (icon_rect, _) = ui.allocate_exact_size(
-                            Vec2::splat(NothingTheme::ICON_SIZE),
-                            egui::Sense::hover(),
-                        );
-                        self.icons.paint_at_rotated(
-                            ui,
-                            status_icon,
-                            icon_rect.center(),
-                            icon_sz,
-                            tint,
-                            if self.is_processing() { spin } else { 0.0 },
-                        );
-                        ui.add_space(6.0);
-                        let status = if let Err(e) = &self.paths {
-                            e.clone()
-                        } else {
-                            self.status_text()
-                        };
-                        ui.label(
-                            egui::RichText::new(status)
-                                .font(NothingTheme::font_label())
-                                .color(tint),
-                        );
-                    });
+                ui.add_space(SPACE_SM);
+                ui.horizontal(|ui| {
+                    let status_icon = if self.is_processing() {
+                        Icon::CircleNotch
+                    } else if matches!(self.run_state, RunState::Done) {
+                        Icon::Check
+                    } else if self.status_message.is_some()
+                        || matches!(self.run_state, RunState::Error(_))
+                        || self.paths.is_err()
+                    {
+                        Icon::Warning
+                    } else {
+                        Icon::Sparkle
+                    };
+                    let tint = if self.status_message.is_some()
+                        || matches!(self.run_state, RunState::Error(_))
+                        || self.paths.is_err()
+                    {
+                        NothingTheme::ACCENT
+                    } else {
+                        NothingTheme::TEXT_SECONDARY
+                    };
+                    let icon_sz = NothingTheme::ICON_SIZE
+                        * (1.0 + 0.22 * self.done_pulse * self.done_pulse);
+                    let (icon_rect, _) = ui.allocate_exact_size(
+                        Vec2::splat(NothingTheme::ICON_SIZE),
+                        egui::Sense::hover(),
+                    );
+                    self.icons.paint_at_rotated(
+                        ui,
+                        status_icon,
+                        icon_rect.center(),
+                        icon_sz,
+                        tint,
+                        if self.is_processing() { spin } else { 0.0 },
+                    );
+                    ui.add_space(6.0);
+                    let status = if let Err(e) = &self.paths {
+                        e.clone()
+                    } else {
+                        self.status_text()
+                    };
+                    ui.label(
+                        egui::RichText::new(status)
+                            .font(NothingTheme::font_label())
+                            .color(tint),
+                    );
                 });
             });
 
