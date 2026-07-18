@@ -134,7 +134,7 @@ impl UpscaleApp {
         let Ok(paths) = self.paths.as_ref() else {
             return;
         };
-        let Some(model) = paths.suggest_model.clone() else {
+        let Some(models) = paths.suggest_models.clone() else {
             self.suggest_status = Some("Suggest model missing — re-run setup".into());
             self.suggest_status_ttl = 4.0;
             return;
@@ -151,7 +151,7 @@ impl UpscaleApp {
         self.suggest_status_ttl = 0.0;
 
         thread::spawn(move || {
-            let result = suggest::classify(&model, &image)
+            let result = suggest::classify(&models, &image)
                 .and_then(|classified| suggest::suggest_settings(&classified, &backends));
             let _ = tx.send(result);
         });
@@ -953,7 +953,7 @@ impl eframe::App for UpscaleApp {
                         .paths
                         .as_ref()
                         .ok()
-                        .and_then(|p| p.suggest_model.as_ref())
+                        .and_then(|p| p.suggest_models.as_ref())
                         .is_none()
                     {
                         "Suggest model missing — re-run setup"

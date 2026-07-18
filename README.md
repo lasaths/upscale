@@ -115,15 +115,17 @@ cargo run --release
 - Supported inputs: `jpg`, `jpeg`, `png`, `webp`.
 - Pick an **engine**, **model**, **scale**, optional **denoise** (waifu2x /
   Real-CUGAN), **TTA**, and **output format** — or click **Suggest** to classify
-  the preview image (anime / real / rendered) and apply a preset.
+  the preview image (anime vs photo) and apply a preset.
 - Press **Run** (or `Enter`). Outputs are written next to each input as
   `<name>_upscaled.<ext>`.
 
 ### Suggest
 
-Uses a tiny EfficientNet-B0 ONNX classifier
-([Mitchins/image-medium-classifier-efficientnet-b0-v1](https://huggingface.co/Mitchins/image-medium-classifier-efficientnet-b0-v1),
-OpenRAIL) downloaded by setup into `models/suggest/medium_classify.onnx`.
+Uses a deepghs ONNX cascade (OpenRAIL) downloaded by setup into
+`models/suggest/`:
+1. [`anime_real_cls`](https://huggingface.co/deepghs/anime_real_cls) — anime vs real
+2. [`anime_classification`](https://huggingface.co/deepghs/anime_classification) — if anime, subtype (`illustration` / `bangumi` / `comic` → anime preset; `3d` / `not_painting` → photo preset)
+
 Classifies the **previewed** queue item only; does not start an upscale.
 
 ### Real-ESRGAN models

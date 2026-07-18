@@ -110,22 +110,30 @@ if ($OnnxFile) {
 }
 
 Write-Host ""
-Write-Host "==> Suggest classifier (EfficientNet-B0, optional)"
+Write-Host "==> Suggest classifiers (deepghs cascade, optional)"
 $SuggestDir = Join-Path $Dest "models\suggest"
 New-Item -ItemType Directory -Force -Path $SuggestDir | Out-Null
-$SuggestOnnx = Join-Path $Cache "medium_classify.onnx"
-$SuggestUrl = "https://github.com/lasaths/upscale/releases/download/medium-classify-v1/medium_classify.onnx"
-try {
-    if (-not (Test-Path $SuggestOnnx)) {
-        Write-Host "  downloading medium_classify.onnx..."
-        Invoke-WebRequest -Uri $SuggestUrl -OutFile $SuggestOnnx -UseBasicParsing
+$Legacy = Join-Path $SuggestDir "medium_classify.onnx"
+if (Test-Path $Legacy) { Remove-Item $Legacy -Force }
+
+function Install-SuggestModel([string]$Name, [string]$Url) {
+    $cached = Join-Path $Cache $Name
+    if (-not (Test-Path $cached)) {
+        Write-Host "  downloading $Name..."
+        Invoke-WebRequest -Uri $Url -OutFile $cached -UseBasicParsing
     } else {
-        Write-Host "  cached medium_classify.onnx"
+        Write-Host "  cached $Name"
     }
-    Copy-Item $SuggestOnnx (Join-Path $SuggestDir "medium_classify.onnx") -Force
-    Write-Host "  installed medium_classify.onnx"
+    Copy-Item $cached (Join-Path $SuggestDir $Name) -Force
+    Write-Host "  installed $Name"
+}
+
+try {
+    Install-SuggestModel "anime_real.onnx" `
+        "https://huggingface.co/deepghs/anime_real_cls/resolve/main/mobilenetv3_v1.4_dist/model.onnx"
+    Install-SuggestModel "anime_cls.onnx" `
+        "https://huggingface.co/deepghs/anime_classification/resolve/main/mobilenetv3_v1.5_dist/model.onnx"
 } catch {
-    if (Test-Path $SuggestOnnx) { Remove-Item $SuggestOnnx -Force }
     Write-Host "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
 }
 

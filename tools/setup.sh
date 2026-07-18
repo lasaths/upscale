@@ -136,21 +136,34 @@ if [[ -n "$ONNX_SRC" ]]; then
 fi
 
 echo ""
-echo "==> Suggest classifier (EfficientNet-B0, optional)"
+echo "==> Suggest classifiers (deepghs cascade, optional)"
 SUGGEST_DIR="$DEST/models/suggest"
 mkdir -p "$SUGGEST_DIR"
-SUGGEST_ONNX="$CACHE/medium_classify.onnx"
-SUGGEST_URL="https://github.com/lasaths/upscale/releases/download/medium-classify-v1/medium_classify.onnx"
-# Hosted release asset (ONNX export of Mitchins/image-medium-classifier-efficientnet-b0-v1).
-if [[ -f "$SUGGEST_ONNX" ]]; then
-  echo "  cached $(basename "$SUGGEST_ONNX")"
-  cp "$SUGGEST_ONNX" "$SUGGEST_DIR/medium_classify.onnx"
-  echo "  installed medium_classify.onnx"
-elif curl -fsSL --retry 3 -o "$SUGGEST_ONNX" "$SUGGEST_URL"; then
-  cp "$SUGGEST_ONNX" "$SUGGEST_DIR/medium_classify.onnx"
-  echo "  installed medium_classify.onnx"
-else
-  rm -f "$SUGGEST_ONNX"
+rm -f "$SUGGEST_DIR/medium_classify.onnx"
+# anime_real → anime_cls cascade (OpenRAIL ONNX from deepghs).
+download_suggest() {
+  local name="$1" url="$2"
+  local cached="$CACHE/$name"
+  if [[ -f "$cached" ]]; then
+    echo "  cached $name"
+  elif curl -fsSL --retry 3 -o "$cached" "$url"; then
+    echo "  downloaded $name"
+  else
+    rm -f "$cached"
+    return 1
+  fi
+  cp "$cached" "$SUGGEST_DIR/$name"
+  echo "  installed $name"
+}
+
+SUGGEST_OK=1
+download_suggest "anime_real.onnx" \
+  "https://huggingface.co/deepghs/anime_real_cls/resolve/main/mobilenetv3_v1.4_dist/model.onnx" \
+  || SUGGEST_OK=0
+download_suggest "anime_cls.onnx" \
+  "https://huggingface.co/deepghs/anime_classification/resolve/main/mobilenetv3_v1.5_dist/model.onnx" \
+  || SUGGEST_OK=0
+if [[ "$SUGGEST_OK" -ne 1 ]]; then
   echo "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
 fi
 

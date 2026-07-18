@@ -10,7 +10,7 @@ pub struct Paths {
     pub upscale_dir: PathBuf,
     pub backends: BackendPaths,
     pub onnx_models: Vec<PathBuf>,
-    pub suggest_model: Option<PathBuf>,
+    pub suggest_models: Option<suggest::SuggestModels>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,7 +49,7 @@ impl BackendPaths {
 impl Paths {
     pub fn discover() -> Result<Self, String> {
         let root = find_root()?;
-        let (upscale_dir, backends, onnx_models, suggest_model) = discover_backends(&root)?;
+        let (upscale_dir, backends, onnx_models, suggest_models) = discover_backends(&root)?;
 
         if !backends.any_available() && onnx_models.is_empty() {
             return Err(
@@ -63,12 +63,12 @@ impl Paths {
             upscale_dir,
             backends,
             onnx_models,
-            suggest_model,
+            suggest_models,
         })
     }
 
     pub fn suggest_available(&self) -> bool {
-        self.suggest_model.is_some()
+        self.suggest_models.is_some()
     }
 
     pub fn require(&self, algorithm: Algorithm) -> Result<&Backend, String> {
@@ -88,19 +88,27 @@ impl Paths {
 
 fn discover_backends(
     root: &Path,
-) -> Result<(PathBuf, BackendPaths, Vec<PathBuf>, Option<PathBuf>), String> {
+) -> Result<
+    (
+        PathBuf,
+        BackendPaths,
+        Vec<PathBuf>,
+        Option<suggest::SuggestModels>,
+    ),
+    String,
+> {
     let unified = root.join("tools/upscale");
     if unified.is_dir() {
         let models_root = unified.join("models");
         let onnx_models = onnx::discover_models(&models_root);
-        let suggest_model = suggest::discover_model(&models_root);
+        let suggest_models = suggest::discover_models(&models_root);
         let backends = BackendPaths {
             realesrgan: resolve_backend(&unified, &models_root, Algorithm::RealEsrgan),
             realcugan: resolve_backend(&unified, &models_root, Algorithm::RealCugan),
             waifu2x: resolve_backend(&unified, &models_root, Algorithm::Waifu2x),
             realsr: resolve_backend(&unified, &models_root, Algorithm::RealSr),
         };
-        return Ok((unified, backends, onnx_models, suggest_model));
+        return Ok((unified, backends, onnx_models, suggest_models));
     }
 
     // Legacy layout: tools/realesrgan-full/ with exe + models/ at that level.
@@ -109,7 +117,7 @@ fn discover_backends(
         let exe = legacy.join(Algorithm::RealEsrgan.exe_name());
         let models_root = legacy.join("models");
         let onnx_models = onnx::discover_models(&models_root);
-        let suggest_model = suggest::discover_model(&models_root);
+        let suggest_models = suggest::discover_models(&models_root);
         let realesrgan = if exe.is_file() {
             Some(Backend {
                 exe,
@@ -125,7 +133,7 @@ fn discover_backends(
                 ..Default::default()
             },
             onnx_models,
-            suggest_model,
+            suggest_models,
         ));
     }
 
@@ -237,17 +245,21 @@ mod tests {
     }
 
     #[test]
-    fn suggest_model_discovered() {
+    fn suggest_models_discovered() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let unified = root.join("tools/upscale");
         let suggest_dir = unified.join("models/suggest");
         fs::create_dir_all(&suggest_dir).unwrap();
         fs::write(unified.join(Algorithm::RealEsrgan.exe_name()), b"").unwrap();
-        let model = suggest_dir.join("medium_classify.onnx");
-        fs::write(&model, b"fake").unwrap();
+        let anime_real = suggest_dir.join("anime_real.onnx");
+        let anime_cls = suggest_dir.join("anime_cls.onnx");
+        fs::write(&anime_real, b"fake").unwrap();
+        fs::write(&anime_cls, b"fake").unwrap();
 
         let (_, _, _, suggest) = discover_backends(root).unwrap();
-        assert_eq!(suggest.as_deref(), Some(model.as_path()));
+        let suggest = suggest.expect("suggest models");
+        assert_eq!(suggest.anime_real, anime_real);
+        assert_eq!(suggest.anime_cls, anime_cls);
     }
 }
