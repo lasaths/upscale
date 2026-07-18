@@ -1,5 +1,6 @@
 use crate::drop::{gpu_id, tile_size_for};
 use crate::models::{Algorithm, UpscaleConfig};
+use crate::onnx;
 use crate::paths::Backend;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -120,6 +121,7 @@ pub fn build_cli_args(
                 model_dir.to_string_lossy().into_owned(),
             ]);
         }
+        Algorithm::Onnx => {}
     }
 
     args.extend([
@@ -266,11 +268,89 @@ pub fn spawn_worker(
     }
 }
 
+pub fn spawn_onnx_worker(
+    model_path: PathBuf,
+    items: Vec<(PathBuf, PathBuf)>,
+    format: crate::models::OutputFormat,
+) -> WorkerHandle {
+    let progress = Arc::new(Mutex::new(WorkerProgress {
+        total: items.len(),
+        ..Default::default()
+    }));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let child_slot: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+
+    let progress_clone = Arc::clone(&progress);
+    let cancel_clone = Arc::clone(&cancel);
+    let join = thread::spawn(move || {
+        {
+            let mut prog = progress_clone.lock().unwrap();
+            prog.running = true;
+            prog.total = items.len();
+        }
+
+        for (index, (input, output)) in items.into_iter().enumerate() {
+            if cancel_clone.load(Ordering::SeqCst) {
+                break;
+            }
+            {
+                let mut prog = progress_clone.lock().unwrap();
+                prog.current = index + 1;
+                prog.image_percent = 0.0;
+                prog.filename = input
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+
+            let progress_cb = {
+                let progress = Arc::clone(&progress_clone);
+                move |pct: f32| {
+                    progress.lock().unwrap().image_percent = pct;
+                }
+            };
+
+            let mut cb = progress_cb;
+            match onnx::upscale_file(
+                &model_path,
+                &input,
+                &output,
+                format,
+                &cancel_clone,
+                &mut cb,
+            ) {
+                Ok(()) => {
+                    progress_clone.lock().unwrap().image_percent = 100.0;
+                }
+                Err(err) => {
+                    let mut prog = progress_clone.lock().unwrap();
+                    prog.running = false;
+                    prog.finished = true;
+                    prog.error = Some(format!("{err} {}", input.display()));
+                    return;
+                }
+            }
+        }
+
+        let mut prog = progress_clone.lock().unwrap();
+        prog.running = false;
+        prog.finished = true;
+    });
+
+    WorkerHandle {
+        progress,
+        cancel,
+        child: child_slot,
+        join: Some(join),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{
-        Algorithm, RealCuganModel, RealEsrganModel, RealSrModel, Waifu2xModel,
+        Algorithm, DenoiseLevel, OutputFormat, RealCuganModel, RealEsrganModel, RealSrModel,
+        Variant, Waifu2xModel,
     };
     use crate::paths::Backend;
     use std::path::PathBuf;
@@ -292,6 +372,7 @@ mod tests {
             format: OutputFormat::Png,
             denoise: DenoiseLevel::Zero,
             tta: false,
+            onnx_model: None,
         };
         let args = build_cli_args(
             &backend,
@@ -317,6 +398,7 @@ mod tests {
             format: OutputFormat::Webp,
             denoise: DenoiseLevel::One,
             tta: true,
+            onnx_model: None,
         };
         let args = build_cli_args(
             &backend,
@@ -342,6 +424,7 @@ mod tests {
             format: OutputFormat::Jpg,
             denoise: DenoiseLevel::Zero,
             tta: false,
+            onnx_model: None,
         };
         let args = build_cli_args(
             &backend,
@@ -365,6 +448,7 @@ mod tests {
             format: OutputFormat::Png,
             denoise: DenoiseLevel::Minus1,
             tta: false,
+            onnx_model: None,
         };
         let args = build_cli_args(
             &backend,

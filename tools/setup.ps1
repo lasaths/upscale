@@ -92,6 +92,24 @@ if (Test-Path (Join-Path $RealsrDir "models-DF2K")) {
 }
 
 Write-Host ""
+Write-Host "==> ONNX (Real-ESRGAN x4plus, optional)"
+$OnnxDir = Join-Path $Dest "models\onnx"
+New-Item -ItemType Directory -Force -Path $OnnxDir | Out-Null
+$OnnxZip = Join-Path $Cache "real_esrgan_x4plus-onnx-float.zip"
+Fetch "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/real_esrgan_x4plus/releases/v0.50.2/real_esrgan_x4plus-onnx-float.zip" $OnnxZip
+$OnnxEx = Join-Path $Cache "onnx-extract"
+Extract $OnnxZip $OnnxEx
+$OnnxFile = Get-ChildItem -Path $OnnxEx -Recurse -Filter "real_esrgan_x4plus.onnx" | Select-Object -First 1
+if ($OnnxFile) {
+    Copy-Item $OnnxFile.FullName (Join-Path $OnnxDir "real_esrgan_x4plus.onnx") -Force
+    $DataFile = Join-Path $OnnxFile.DirectoryName "real_esrgan_x4plus.data"
+    if (Test-Path $DataFile) {
+        Copy-Item $DataFile (Join-Path $OnnxDir "real_esrgan_x4plus.data") -Force
+    }
+    Write-Host "  installed real_esrgan_x4plus.onnx (+ external weights if present)"
+}
+
+Write-Host ""
 Write-Host "Done. Installed:"
 Get-ChildItem $Dest -File | ForEach-Object { $_.Name }
 Write-Host "Models:"

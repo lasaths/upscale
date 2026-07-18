@@ -7,15 +7,28 @@ pub enum Algorithm {
     RealCugan,
     Waifu2x,
     RealSr,
+    Onnx,
 }
 
 impl Algorithm {
-    pub const ALL: [Algorithm; 4] = [
+    pub const NCNN: [Algorithm; 4] = [
         Algorithm::RealEsrgan,
         Algorithm::RealCugan,
         Algorithm::Waifu2x,
         Algorithm::RealSr,
     ];
+
+    pub const ALL: [Algorithm; 5] = [
+        Algorithm::RealEsrgan,
+        Algorithm::RealCugan,
+        Algorithm::Waifu2x,
+        Algorithm::RealSr,
+        Algorithm::Onnx,
+    ];
+
+    pub fn is_onnx(self) -> bool {
+        matches!(self, Algorithm::Onnx)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -23,6 +36,7 @@ impl Algorithm {
             Algorithm::RealCugan => "CUGAN",
             Algorithm::Waifu2x => "WAIFU2",
             Algorithm::RealSr => "REALSR",
+            Algorithm::Onnx => "ONNX",
         }
     }
 
@@ -32,6 +46,7 @@ impl Algorithm {
             Algorithm::RealCugan => "realcugan",
             Algorithm::Waifu2x => "waifu2x",
             Algorithm::RealSr => "realsr",
+            Algorithm::Onnx => "onnx",
         }
     }
 
@@ -41,6 +56,9 @@ impl Algorithm {
             Algorithm::RealCugan => "Anime & illustrations — clean lines, denoise control",
             Algorithm::Waifu2x => "Classic anime upscaler — fast, great for line art",
             Algorithm::RealSr => "Real-world photos — natural detail at 4×",
+            Algorithm::Onnx => {
+                "Higher-quality models via ONNX Runtime (CoreML on Mac, DirectML on Windows)"
+            }
         }
     }
 
@@ -51,6 +69,7 @@ impl Algorithm {
                 Algorithm::RealCugan => "realcugan-ncnn-vulkan.exe",
                 Algorithm::Waifu2x => "waifu2x-ncnn-vulkan.exe",
                 Algorithm::RealSr => "realsr-ncnn-vulkan.exe",
+                Algorithm::Onnx => "onnx",
             }
         } else {
             match self {
@@ -58,6 +77,7 @@ impl Algorithm {
                 Algorithm::RealCugan => "realcugan-ncnn-vulkan",
                 Algorithm::Waifu2x => "waifu2x-ncnn-vulkan",
                 Algorithm::RealSr => "realsr-ncnn-vulkan",
+                Algorithm::Onnx => "onnx",
             }
         }
     }
@@ -66,7 +86,7 @@ impl Algorithm {
         match self {
             Algorithm::RealEsrgan | Algorithm::RealCugan => &[2, 3, 4],
             Algorithm::Waifu2x => &[2, 4],
-            Algorithm::RealSr => &[4],
+            Algorithm::RealSr | Algorithm::Onnx => &[4],
         }
     }
 
@@ -81,13 +101,19 @@ impl Algorithm {
 
     pub fn default_scale(self) -> u8 {
         match self {
-            Algorithm::RealEsrgan | Algorithm::RealCugan | Algorithm::RealSr => 4,
+            Algorithm::RealEsrgan | Algorithm::RealCugan | Algorithm::RealSr | Algorithm::Onnx => {
+                4
+            }
             Algorithm::Waifu2x => 2,
         }
     }
 
     pub fn supports_denoise(self) -> bool {
         matches!(self, Algorithm::RealCugan | Algorithm::Waifu2x)
+    }
+
+    pub fn supports_tta(self) -> bool {
+        !self.is_onnx()
     }
 
     pub fn default_denoise(self) -> DenoiseLevel {
@@ -104,11 +130,13 @@ impl Algorithm {
             Algorithm::RealCugan => Variant::RealCugan(RealCuganModel::Se),
             Algorithm::Waifu2x => Variant::Waifu2x(Waifu2xModel::Cunet),
             Algorithm::RealSr => Variant::RealSr(RealSrModel::Df2k),
+            Algorithm::Onnx => Variant::RealEsrgan(RealEsrganModel::X4Plus),
         }
     }
 
     pub fn variant_options(self) -> &'static [(Variant, &'static str)] {
         match self {
+            Algorithm::Onnx => &[],
             Algorithm::RealEsrgan => &[
                 (Variant::RealEsrgan(RealEsrganModel::AnimeV3), "animev3"),
                 (Variant::RealEsrgan(RealEsrganModel::X4Plus), "x4plus"),
@@ -281,7 +309,7 @@ impl OutputFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct UpscaleConfig {
     pub algorithm: Algorithm,
     pub variant: Variant,
@@ -289,6 +317,7 @@ pub struct UpscaleConfig {
     pub format: OutputFormat,
     pub denoise: DenoiseLevel,
     pub tta: bool,
+    pub onnx_model: Option<PathBuf>,
 }
 
 impl UpscaleConfig {

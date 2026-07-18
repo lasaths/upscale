@@ -1,4 +1,5 @@
 use crate::models::Algorithm;
+use crate::onnx;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +8,7 @@ pub struct Paths {
     pub root: PathBuf,
     pub upscale_dir: PathBuf,
     pub backends: BackendPaths,
+    pub onnx_models: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -30,6 +32,7 @@ impl BackendPaths {
             Algorithm::RealCugan => self.realcugan.as_ref(),
             Algorithm::Waifu2x => self.waifu2x.as_ref(),
             Algorithm::RealSr => self.realsr.as_ref(),
+            Algorithm::Onnx => None,
         }
     }
 
@@ -44,11 +47,12 @@ impl BackendPaths {
 impl Paths {
     pub fn discover() -> Result<Self, String> {
         let root = find_root()?;
-        let (upscale_dir, backends) = discover_backends(&root)?;
+        let (upscale_dir, backends, onnx_models) = discover_backends(&root)?;
 
-        if !backends.any_available() {
+        if !backends.any_available() && onnx_models.is_empty() {
             return Err(
-                "[ERROR: no upscaler binaries found] install under tools/upscale/".into(),
+                "[ERROR: no upscaler found] install ncnn binaries or ONNX models under tools/upscale/"
+                    .into(),
             );
         }
 
@@ -56,6 +60,7 @@ impl Paths {
             root,
             upscale_dir,
             backends,
+            onnx_models,
         })
     }
 
@@ -69,12 +74,19 @@ impl Paths {
         })
     }
 
+    pub fn onnx_available(&self) -> bool {
+        !self.onnx_models.is_empty()
+    }
+
     pub fn exe_display(&self) -> String {
-        let mut parts = Vec::new();
-        for algo in Algorithm::ALL {
+        let mut parts: Vec<String> = Vec::new();
+        for algo in Algorithm::NCNN {
             if self.backends.get(algo).is_some() {
-                parts.push(algo.header_label());
+                parts.push(algo.header_label().into());
             }
+        }
+        if self.onnx_available() {
+            parts.push(format!("onnx ({})", self.onnx_models.len()));
         }
         if parts.is_empty() {
             shorten(&self.upscale_dir, &self.root)
@@ -86,17 +98,18 @@ impl Paths {
     }
 }
 
-fn discover_backends(root: &Path) -> Result<(PathBuf, BackendPaths), String> {
+fn discover_backends(root: &Path) -> Result<(PathBuf, BackendPaths, Vec<PathBuf>), String> {
     let unified = root.join("tools/upscale");
     if unified.is_dir() {
         let models_root = unified.join("models");
+        let onnx_models = onnx::discover_models(&models_root);
         let backends = BackendPaths {
             realesrgan: resolve_backend(&unified, &models_root, Algorithm::RealEsrgan),
             realcugan: resolve_backend(&unified, &models_root, Algorithm::RealCugan),
             waifu2x: resolve_backend(&unified, &models_root, Algorithm::Waifu2x),
             realsr: resolve_backend(&unified, &models_root, Algorithm::RealSr),
         };
-        return Ok((unified, backends));
+        return Ok((unified, backends, onnx_models));
     }
 
     // Legacy layout: tools/realesrgan-full/ with exe + models/ at that level.
@@ -104,6 +117,7 @@ fn discover_backends(root: &Path) -> Result<(PathBuf, BackendPaths), String> {
     if legacy.is_dir() {
         let exe = legacy.join(Algorithm::RealEsrgan.exe_name());
         let models_root = legacy.join("models");
+        let onnx_models = onnx::discover_models(&models_root);
         let realesrgan = if exe.is_file() {
             Some(Backend {
                 exe,
@@ -118,6 +132,7 @@ fn discover_backends(root: &Path) -> Result<(PathBuf, BackendPaths), String> {
                 realesrgan,
                 ..Default::default()
             },
+            onnx_models,
         ));
     }
 
@@ -193,10 +208,11 @@ mod tests {
         let exe_name = Algorithm::RealEsrgan.exe_name();
         fs::write(legacy.join(exe_name), b"").unwrap();
 
-        let (dir, backends) = discover_backends(root).unwrap();
+        let (dir, backends, onnx) = discover_backends(root).unwrap();
         assert_eq!(dir, legacy);
         assert!(backends.realesrgan.is_some());
         assert!(backends.realcugan.is_none());
+        assert!(onnx.is_empty());
     }
 
     #[test]
@@ -205,14 +221,29 @@ mod tests {
         let root = tmp.path();
         let unified = root.join("tools/upscale");
         fs::create_dir_all(unified.join("models")).unwrap();
-        for algo in Algorithm::ALL {
+        for algo in Algorithm::NCNN {
             fs::write(unified.join(algo.exe_name()), b"").unwrap();
         }
 
-        let (_, backends) = discover_backends(root).unwrap();
+        let (_, backends, onnx) = discover_backends(root).unwrap();
         assert!(backends.realesrgan.is_some());
         assert!(backends.realcugan.is_some());
         assert!(backends.waifu2x.is_some());
         assert!(backends.realsr.is_some());
+        assert!(onnx.is_empty());
+    }
+
+    #[test]
+    fn onnx_only_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let unified = root.join("tools/upscale");
+        let onnx_dir = unified.join("models/onnx");
+        fs::create_dir_all(&onnx_dir).unwrap();
+        fs::write(onnx_dir.join("test.onnx"), b"fake").unwrap();
+
+        let (_, backends, onnx) = discover_backends(root).unwrap();
+        assert!(!backends.any_available());
+        assert_eq!(onnx.len(), 1);
     }
 }

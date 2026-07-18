@@ -3,13 +3,14 @@ use crate::icons::{Icon, Icons};
 use crate::models::{
     on_algorithm_changed, Algorithm, DenoiseLevel, OutputFormat, UpscaleConfig, Variant,
 };
+use crate::onnx;
 use crate::paths::Paths;
 use crate::preview::PreviewCache;
 use crate::theme::{
     label_caps, progress_bar, run_button, segmented, setting_hint, setting_row, truncate_middle, NothingTheme,
     RunButtonState, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL,
 };
-use crate::worker::{spawn_worker, WorkerHandle};
+use crate::worker::{spawn_onnx_worker, spawn_worker, WorkerHandle};
 use eframe::egui::{self, Margin, Rect, Sense, Stroke, Vec2};
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,7 @@ pub struct UpscaleApp {
     denoise: DenoiseLevel,
     tta: bool,
     format: OutputFormat,
+    onnx_model_idx: usize,
     run_state: RunState,
     worker: Option<WorkerHandle>,
     drop_hovered: bool,
@@ -62,6 +64,7 @@ impl UpscaleApp {
             denoise: DenoiseLevel::Zero,
             tta: false,
             format: OutputFormat::default(),
+            onnx_model_idx: 0,
             run_state: RunState::Idle,
             worker: None,
             drop_hovered: false,
@@ -74,11 +77,32 @@ impl UpscaleApp {
     }
 
     fn backend_available(&self) -> bool {
+        let Ok(paths) = self.paths.as_ref() else {
+            return false;
+        };
+        if self.algorithm.is_onnx() {
+            return paths
+                .onnx_models
+                .get(self.onnx_model_idx)
+                .is_some();
+        }
+        paths.require(self.algorithm).is_ok()
+    }
+
+    fn selected_onnx_model(&self) -> Option<PathBuf> {
         self.paths
             .as_ref()
-            .ok()
-            .and_then(|p| p.require(self.algorithm).ok())
-            .is_some()
+            .ok()?
+            .onnx_models
+            .get(self.onnx_model_idx)
+            .cloned()
+    }
+
+    fn onnx_model_description(&self) -> &'static str {
+        self.selected_onnx_model()
+            .as_deref()
+            .map(onnx::model_description)
+            .unwrap_or("Drop .onnx files into tools/upscale/models/onnx/")
     }
 
     fn can_run(&self) -> bool {
@@ -98,6 +122,7 @@ impl UpscaleApp {
             format: self.format,
             denoise: self.denoise,
             tta: self.tta,
+            onnx_model: self.selected_onnx_model(),
         }
     }
 
@@ -110,7 +135,13 @@ impl UpscaleApp {
         };
         Algorithm::ALL
             .iter()
-            .filter(|&&a| paths.backends.get(a).is_some())
+            .filter(|&&a| {
+                if a.is_onnx() {
+                    paths.onnx_available()
+                } else {
+                    paths.backends.get(a).is_some()
+                }
+            })
             .map(|&a| (a, a.label()))
             .collect()
     }
@@ -193,14 +224,6 @@ impl UpscaleApp {
             return;
         };
 
-        let Ok(backend) = paths.require(self.algorithm).cloned() else {
-            self.status_message = Some(format!(
-                "[ERROR: {} not installed]",
-                self.algorithm.header_label()
-            ));
-            return;
-        };
-
         let pending: Vec<(PathBuf, PathBuf)> = self
             .queue
             .iter()
@@ -214,6 +237,25 @@ impl UpscaleApp {
 
         self.run_state = RunState::Running;
         self.status_message = None;
+
+        if self.algorithm.is_onnx() {
+            let Some(model) = self.upscale_config().onnx_model else {
+                self.status_message = Some("[ERROR: no ONNX model selected]".into());
+                self.run_state = RunState::Error("[ERROR: no ONNX model]".into());
+                return;
+            };
+            self.worker = Some(spawn_onnx_worker(model, pending, self.format));
+            return;
+        }
+
+        let Ok(backend) = paths.require(self.algorithm).cloned() else {
+            self.status_message = Some(format!(
+                "[ERROR: {} not installed]",
+                self.algorithm.header_label()
+            ));
+            return;
+        };
+
         self.worker = Some(spawn_worker(
             backend,
             pending,
@@ -457,6 +499,9 @@ impl UpscaleApp {
                     &mut self.variant,
                     &mut self.denoise,
                 );
+                if self.algorithm.is_onnx() {
+                    self.onnx_model_idx = 0;
+                }
             }
             let prev = self.algorithm;
             segmented(ui, &mut self.algorithm, &options, settings_enabled, w);
@@ -467,6 +512,9 @@ impl UpscaleApp {
                     &mut self.variant,
                     &mut self.denoise,
                 );
+                if self.algorithm.is_onnx() {
+                    self.onnx_model_idx = 0;
+                }
             }
         }
     }
@@ -657,13 +705,48 @@ impl eframe::App for UpscaleApp {
 
                 ui.add_space(SPACE_SM);
                 setting_row(ui, &self.icons, Icon::Cpu, "MODEL", |ui| {
-                    let w = ui.available_width();
-                    let options = self.algorithm.variant_options();
-                    let mut picked = self.variant;
-                    segmented(ui, &mut picked, options, settings_enabled, w);
-                    self.variant = picked;
+                    if self.algorithm.is_onnx() {
+                        let models = self
+                            .paths
+                            .as_ref()
+                            .map(|p| p.onnx_models.as_slice())
+                            .unwrap_or(&[]);
+                        if models.is_empty() {
+                            ui.label(
+                                egui::RichText::new("no .onnx in models/onnx/")
+                                    .font(NothingTheme::font_body())
+                                    .color(NothingTheme::TEXT_DISABLED),
+                            );
+                        } else {
+                            let labels: Vec<String> =
+                                models.iter().map(|p| onnx::model_label(p)).collect();
+                            let mut idx = self.onnx_model_idx.min(models.len().saturating_sub(1));
+                            egui::ComboBox::from_id_salt("onnx_model")
+                                .selected_text(&labels[idx])
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    for (i, label) in labels.iter().enumerate() {
+                                        ui.selectable_value(&mut idx, i, label);
+                                    }
+                                });
+                            self.onnx_model_idx = idx;
+                        }
+                    } else {
+                        let w = ui.available_width();
+                        let options = self.algorithm.variant_options();
+                        let mut picked = self.variant;
+                        segmented(ui, &mut picked, options, settings_enabled, w);
+                        self.variant = picked;
+                    }
                 });
-                setting_hint(ui, self.variant.description());
+                setting_hint(
+                    ui,
+                    if self.algorithm.is_onnx() {
+                        self.onnx_model_description()
+                    } else {
+                        self.variant.description()
+                    },
+                );
 
                 ui.add_space(SPACE_SM);
                 setting_row(ui, &self.icons, Icon::ArrowsOut, "SCALE", |ui| {
@@ -695,19 +778,21 @@ impl eframe::App for UpscaleApp {
                     });
                 }
 
-                ui.add_space(SPACE_SM);
-                setting_row(ui, &self.icons, Icon::Sparkle, "TTA", |ui| {
-                    let w = ui.available_width();
-                    let mut tta_on = self.tta;
-                    segmented(
-                        ui,
-                        &mut tta_on,
-                        &[(false, "OFF"), (true, "ON")],
-                        settings_enabled,
-                        w,
-                    );
-                    self.tta = tta_on;
-                });
+                if self.algorithm.supports_tta() {
+                    ui.add_space(SPACE_SM);
+                    setting_row(ui, &self.icons, Icon::Sparkle, "TTA", |ui| {
+                        let w = ui.available_width();
+                        let mut tta_on = self.tta;
+                        segmented(
+                            ui,
+                            &mut tta_on,
+                            &[(false, "OFF"), (true, "ON")],
+                            settings_enabled,
+                            w,
+                        );
+                        self.tta = tta_on;
+                    });
+                }
 
                 ui.add_space(SPACE_SM);
                 let prev_format = self.format;

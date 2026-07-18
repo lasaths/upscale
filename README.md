@@ -42,15 +42,16 @@ upscale/
 │     ├─ models-upconv_7_anime_style_art_rgb/
 │     ├─ models-upconv_7_photo/
 │     ├─ models-se/
-│     └─ models-DF2K/
+│     ├─ models-DF2K/
+│     └─ onnx/                    # optional ONNX models (.onnx)
 └─ ui/                            # this Rust app
 ```
 
 On macOS/Linux the binaries have no `.exe` suffix. Model folder names must match
 what each ncnn binary expects — the setup scripts handle this.
 
-You do not need all four engines — Loku shows only installed backends. At least one
-is required.
+You do not need all four ncnn engines — Loku shows only installed backends. At least one
+ncnn engine **or** one ONNX model is required.
 
 Verify with `./tools/smoke-test.sh` (macOS/Linux) after setup.
 
@@ -133,16 +134,32 @@ Scales: 2×, 4×. Denoise: -1 through 3.
 
 Scale: 4× only.
 
+### ONNX (ONNX Runtime)
+
+Higher-quality models via the embedded `ort` crate. Uses **CoreML** on macOS and
+**DirectML** on Windows; CPU fallback elsewhere.
+
+| Model | Best for |
+|-------|----------|
+| Any `.onnx` in `models/onnx/` | Depends on model (Real-ESRGAN, HAT, DAT, SwinIR, etc.) |
+
+Setup downloads `real_esrgan_x4plus.onnx` (+ `.data` weights) by default. Add more models from
+[OpenModelDB](https://openmodeldb.io/) — use **FP32** exports for transformer
+models (HAT, DAT). Keep external `.data` files next to their `.onnx` (same basename).
+Models with external weights use CPU on macOS/Windows; single-file models use CoreML/DirectML.
+Tile size is read from the model (typically 128×128). Scale is detected automatically (typically 4×).
+
 ### TTA
 
-Test-time augmentation (`-x`) improves quality at the cost of speed on all engines.
+Test-time augmentation (`-x`) improves quality at the cost of speed on ncnn engines.
+Not available for ONNX.
 
 ## Not included
 
-Loku uses portable ncnn-vulkan CLIs only. These are **not** bundled or supported:
+Loku uses portable ncnn-vulkan CLIs and optional ONNX Runtime inference. These are **not** bundled or supported:
 
 - SUPIR, FlowSR, ODTSR, VARestorer, VOSR, LinearSR (diffusion / PyTorch SOTA)
-- Swin2SR, HAT, Artisan (PyTorch transformer upscalers)
+- PyTorch-only Swin2SR / Artisan workflows (ONNX SwinIR exports are supported)
 - `realesr-general-x4v3` (requires a community-patched ncnn binary)
 
 For those, use ComfyUI or the upstream Python projects.

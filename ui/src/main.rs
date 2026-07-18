@@ -2,6 +2,7 @@ mod app;
 mod drop;
 mod icons;
 mod models;
+mod onnx;
 mod paths;
 mod preview;
 mod theme;

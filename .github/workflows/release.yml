@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: loku-macos-arm64
+          - os: windows-latest
+            artifact: loku-windows-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          STAGE=../dist/${{ matrix.artifact }}
+          mkdir -p "$STAGE"
+          cp target/release/upscale-ui "$STAGE/loku"
+          chmod +x "$STAGE/loku"
+          cp ../README.md ../LICENSE "$STAGE/"
+          cp ../tools/setup.sh "$STAGE/"
+          (cd ../dist && zip -r "${{ matrix.artifact }}.zip" "${{ matrix.artifact }}")
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "../dist/${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/upscale-ui.exe "$stage/loku.exe"
+          Get-ChildItem target/release -Filter "*.dll" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage
+          Copy-Item ../README.md, ../LICENSE, ../tools/setup.ps1 $stage
+          Compress-Archive -Path $stage -DestinationPath "../dist/${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true
+          body: |
+            ## Loku `${{ github.ref_name }}`
+
+            Desktop builds for **macOS (Apple Silicon)** and **Windows (x64)**.
+
+            ### Setup
+            1. Unzip the archive for your OS
+            2. Run `setup.sh` (macOS) or `setup.ps1` (Windows) to download ncnn engines + models
+            3. Launch `loku` / `loku.exe`
+
+            Optional ONNX models go in `tools/upscale/models/onnx/`.
