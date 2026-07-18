@@ -413,7 +413,7 @@ pub enum SuggestButtonState {
     Analyzing,
 }
 
-/// Secondary control (MORE weight) for suggest-settings.
+/// Outlined secondary CTA — pick engine/model/scale from the dropped image.
 pub fn suggest_button(
     ui: &mut egui::Ui,
     icons: &crate::icons::Icons,
@@ -421,25 +421,28 @@ pub fn suggest_button(
     width: f32,
 ) -> egui::Response {
     let enabled = matches!(state, SuggestButtonState::Ready);
-    let (label, color, icon) = match state {
+    let (label, text_color, stroke, icon) = match state {
         SuggestButtonState::Ready => (
-            "SUGGEST",
-            NothingTheme::TEXT_SECONDARY,
+            "SUGGEST SETTINGS",
+            NothingTheme::TEXT_PRIMARY,
+            Stroke::new(1.0, NothingTheme::BORDER_VISIBLE),
             Icon::MagicWand,
         ),
         SuggestButtonState::Disabled => (
-            "SUGGEST",
+            "SUGGEST SETTINGS",
             NothingTheme::TEXT_DISABLED,
+            Stroke::new(1.0, NothingTheme::BORDER),
             Icon::MagicWand,
         ),
         SuggestButtonState::Analyzing => (
             "ANALYZING…",
             NothingTheme::TEXT_PRIMARY,
+            Stroke::new(1.0, NothingTheme::BORDER_VISIBLE),
             Icon::CircleNotch,
         ),
     };
 
-    let size = Vec2::new(width, 32.0);
+    let size = Vec2::new(width, 40.0);
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -452,20 +455,32 @@ pub fn suggest_button(
         if enabled && resp.hovered() { 1.0 } else { 0.0 },
         0.1,
     );
-    let color = if enabled {
-        lerp_color(color, NothingTheme::TEXT_PRIMARY, hover_t)
-    } else {
-        color
-    };
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let stroke = if enabled {
+        Stroke::new(
+            stroke.width,
+            lerp_color(stroke.color, NothingTheme::TEXT_PRIMARY, hover_t),
+        )
+    } else {
+        stroke
+    };
+    let text_color = if enabled {
+        lerp_color(text_color, NothingTheme::TEXT_DISPLAY, hover_t)
+    } else {
+        text_color
+    };
+
+    ui.painter().rect_stroke(rect, 999.0, stroke);
 
     let icon_d = 14.0;
     let gap = 8.0;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), NothingTheme::font_label(), color);
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        NothingTheme::font_button(),
+        text_color,
+    );
     let group_w = icon_d + gap + galley.size().x;
     let start_x = rect.center().x - group_w / 2.0;
     let cy = rect.center().y;
@@ -479,13 +494,13 @@ pub fn suggest_button(
         icon,
         egui::pos2(start_x + icon_d / 2.0, cy),
         icon_d,
-        color,
+        text_color,
         spin,
     );
     ui.painter().galley(
         egui::pos2(start_x + icon_d + gap, cy - galley.size().y / 2.0),
         galley,
-        color,
+        text_color,
     );
 
     resp

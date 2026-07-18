@@ -84,25 +84,6 @@ impl Paths {
     pub fn onnx_available(&self) -> bool {
         !self.onnx_models.is_empty()
     }
-
-    pub fn exe_display(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        for algo in Algorithm::NCNN {
-            if self.backends.get(algo).is_some() {
-                parts.push(algo.header_label().into());
-            }
-        }
-        if self.onnx_available() {
-            parts.push(format!("onnx ({})", self.onnx_models.len()));
-        }
-        if parts.is_empty() {
-            shorten(&self.upscale_dir, &self.root)
-        } else if self.upscale_dir.ends_with("realesrgan-full") {
-            format!("tools/realesrgan-full · {}", parts.join(", "))
-        } else {
-            format!("tools/upscale · {}", parts.join(", "))
-        }
-    }
 }
 
 fn discover_backends(
@@ -198,12 +179,6 @@ fn find_root() -> Result<PathBuf, String> {
     }
 
     Err("[ERROR: could not find repo root] set UPSCALE_ROOT".into())
-}
-
-fn shorten(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
 }
 
 #[cfg(test)]

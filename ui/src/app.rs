@@ -902,6 +902,59 @@ impl eframe::App for UpscaleApp {
                 self.draw_drop_zone(ui, ctx);
                 self.draw_queue(ui);
 
+                // Suggest sits under the image — analyze first, then tweak settings.
+                ui.add_space(SPACE_MD);
+                let suggest_w = ui.available_width();
+                let suggest_state = self.suggest_button_state();
+                let mut suggest_resp =
+                    suggest_button(ui, &self.icons, suggest_state, suggest_w);
+                if !self.can_suggest() && !self.is_suggesting() {
+                    let tip = if self.queue.is_empty() {
+                        "Add an image first"
+                    } else if self
+                        .paths
+                        .as_ref()
+                        .ok()
+                        .and_then(|p| p.suggest_model.as_ref())
+                        .is_none()
+                    {
+                        "Suggest model missing — re-run setup"
+                    } else if self.is_processing() {
+                        "Wait for upscale to finish"
+                    } else {
+                        "No upscaler engine available"
+                    };
+                    suggest_resp = suggest_resp.on_hover_text(tip);
+                }
+                if suggest_resp.clicked() {
+                    self.start_suggest();
+                }
+                if let Some(status) = &self.suggest_status {
+                    let fade = if self.suggest_status_ttl > 0.0
+                        && !status.starts_with("Suggest failed")
+                        && status != "Reading image…"
+                    {
+                        (self.suggest_status_ttl / 4.0).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    if fade > 0.02 {
+                        ui.add_space(4.0);
+                        let base = NothingTheme::TEXT_SECONDARY;
+                        let color = egui::Color32::from_rgba_unmultiplied(
+                            base.r(),
+                            base.g(),
+                            base.b(),
+                            (base.a() as f32 * fade).round() as u8,
+                        );
+                        ui.label(
+                            egui::RichText::new(status)
+                                .font(NothingTheme::font_label())
+                                .color(color),
+                        );
+                    }
+                }
+
                 ui.add_space(SPACE_XL);
 
                 ui.horizontal(|ui| {
@@ -994,64 +1047,10 @@ impl eframe::App for UpscaleApp {
                     });
                 }
 
-                // SUGGEST + MORE — same tertiary weight, one row (no orphan float).
+                // Secondary controls behind MORE — progressive disclosure.
                 ui.add_space(SPACE_MD);
-                let row_w = ui.available_width();
-                let gap = SPACE_SM;
-                let half = ((row_w - gap) / 2.0).max(0.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    let suggest_state = self.suggest_button_state();
-                    let mut suggest_resp =
-                        suggest_button(ui, &self.icons, suggest_state, half);
-                    if !self.can_suggest() && !self.is_suggesting() {
-                        let tip = if self.queue.is_empty() {
-                            "Add an image first"
-                        } else if self
-                            .paths
-                            .as_ref()
-                            .ok()
-                            .and_then(|p| p.suggest_model.as_ref())
-                            .is_none()
-                        {
-                            "Suggest model missing — re-run setup"
-                        } else if self.is_processing() {
-                            "Wait for upscale to finish"
-                        } else {
-                            "No upscaler engine available"
-                        };
-                        suggest_resp = suggest_resp.on_hover_text(tip);
-                    }
-                    if suggest_resp.clicked() {
-                        self.start_suggest();
-                    }
-                    more_toggle(ui, &mut self.show_advanced, half);
-                });
-                if let Some(status) = &self.suggest_status {
-                    let fade = if self.suggest_status_ttl > 0.0
-                        && !status.starts_with("Suggest failed")
-                        && status != "Reading image…"
-                    {
-                        (self.suggest_status_ttl / 4.0).clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
-                    if fade > 0.02 {
-                        ui.add_space(4.0);
-                        let base = NothingTheme::TEXT_SECONDARY;
-                        let color = egui::Color32::from_rgba_unmultiplied(
-                            base.r(),
-                            base.g(),
-                            base.b(),
-                            (base.a() as f32 * fade).round() as u8,
-                        );
-                        ui.label(
-                            egui::RichText::new(status)
-                                .font(NothingTheme::font_label())
-                                .color(color),
-                        );
-                    }
-                }
+                let more_w = ui.available_width();
+                more_toggle(ui, &mut self.show_advanced, more_w);
                 let adv_t = ctx.animate_bool_with_time(
                     egui::Id::new("loku_advanced"),
                     self.show_advanced,
@@ -1202,10 +1201,6 @@ impl eframe::App for UpscaleApp {
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    let exe_hint = match &self.paths {
-                        Ok(p) => p.exe_display(),
-                        Err(e) => e.clone(),
-                    };
                     ui.horizontal(|ui| {
                         let status_icon = if self.is_processing() {
                             Icon::CircleNotch
@@ -1213,6 +1208,7 @@ impl eframe::App for UpscaleApp {
                             Icon::Check
                         } else if self.status_message.is_some()
                             || matches!(self.run_state, RunState::Error(_))
+                            || self.paths.is_err()
                         {
                             Icon::Warning
                         } else {
@@ -1220,6 +1216,7 @@ impl eframe::App for UpscaleApp {
                         };
                         let tint = if self.status_message.is_some()
                             || matches!(self.run_state, RunState::Error(_))
+                            || self.paths.is_err()
                         {
                             NothingTheme::ACCENT
                         } else {
@@ -1240,18 +1237,16 @@ impl eframe::App for UpscaleApp {
                             if self.is_processing() { spin } else { 0.0 },
                         );
                         ui.add_space(6.0);
+                        let status = if let Err(e) = &self.paths {
+                            e.clone()
+                        } else {
+                            self.status_text()
+                        };
                         ui.label(
-                            egui::RichText::new(self.status_text())
+                            egui::RichText::new(status)
                                 .font(NothingTheme::font_label())
                                 .color(tint),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(exe_hint)
-                                    .font(NothingTheme::font_label())
-                                    .color(NothingTheme::TEXT_DISABLED),
-                            );
-                        });
                     });
                 });
             });
