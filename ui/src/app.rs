@@ -1,4 +1,4 @@
-use crate::drop::{collect_paths, file_label, output_path_for};
+use crate::drop::{collect_paths, file_label, ingest_bytes, output_path_for, paste_clipboard_image};
 use crate::icons::{Icon, Icons};
 use crate::models::{
     on_algorithm_changed, Algorithm, DenoiseLevel, OutputFormat, UpscaleConfig, Variant,
@@ -474,10 +474,18 @@ impl UpscaleApp {
     }
 
     fn drop_zone_labels(&self) -> (String, String) {
-        if self.drop_hovered {
-            ("RELEASE TO ADD".into(), "jpg · png · webp".into())
+        let paste = if cfg!(target_os = "macos") {
+            "⌘V"
         } else {
-            ("DROP IMAGES".into(), "jpg · png · webp".into())
+            "Ctrl+V"
+        };
+        if self.drop_hovered {
+            ("RELEASE TO ADD".into(), "jpg · png · webp · paste".into())
+        } else {
+            (
+                "DROP OR PASTE".into(),
+                format!("jpg · png · webp · {paste}"),
+            )
         }
     }
 
@@ -749,19 +757,40 @@ impl UpscaleApp {
 impl eframe::App for UpscaleApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.is_processing() {
-            let mut dropped = Vec::new();
+            let mut dropped_paths = Vec::new();
+            let mut dropped_bytes = Vec::new();
             let mut hovered = false;
-            ctx.input(|i| {
+            let paste_shortcut = ctx.input(|i| {
                 hovered = !i.raw.hovered_files.is_empty();
                 for file in &i.raw.dropped_files {
                     if let Some(path) = &file.path {
-                        dropped.push(path.clone());
+                        dropped_paths.push(path.clone());
+                    } else if let Some(bytes) = &file.bytes {
+                        let name = if file.name.is_empty() {
+                            "dropped.png".into()
+                        } else {
+                            file.name.clone()
+                        };
+                        dropped_bytes.push((bytes.clone(), name));
                     }
                 }
+                i.modifiers.command && i.key_pressed(egui::Key::V)
             });
             self.drop_hovered = hovered;
-            for path in dropped {
+            for path in dropped_paths {
                 self.ingest_path(path);
+            }
+            for (bytes, name) in dropped_bytes {
+                match ingest_bytes(&bytes, &name) {
+                    Ok(path) => self.ingest_path(path),
+                    Err(err) => self.status_message = Some(err),
+                }
+            }
+            if paste_shortcut {
+                match paste_clipboard_image() {
+                    Ok(path) => self.ingest_path(path),
+                    Err(err) => self.status_message = Some(err),
+                }
             }
         }
 
