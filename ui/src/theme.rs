@@ -171,63 +171,324 @@ pub fn setting_hint(ui: &mut egui::Ui, text: &str) {
 
 pub fn segmented<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
     current: &mut T,
     options: &[(T, &str)],
     enabled: bool,
     width: f32,
 ) {
-    // Equal-width buttons that exactly fill `width`, so every segmented control
-    // shares one right edge and the settings strip reads as a clean grid.
-    let n = options.len().max(1) as f32;
-    let btn_w = ((width - 4.0) / n).max(40.0);
-    ui.add_enabled_ui(enabled, |ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let frame = egui::Frame::none()
-            .stroke(Stroke::new(1.0, NothingTheme::BORDER_VISIBLE))
-            .rounding(Rounding::same(8.0))
-            .inner_margin(Margin::same(2.0));
+    // Equal-width segments + a sliding pill (short ease) so selection feels
+    // physical without eating interaction latency.
+    // Unique id_salt per call site — shared "seg"/pill ids collide across rows.
+    ui.push_id(id_salt, |ui| {
+        let n = options.len().max(1) as f32;
+        let btn_w = ((width - 4.0) / n).max(40.0);
+        let selected_idx = options
+            .iter()
+            .position(|(v, _)| *v == *current)
+            .unwrap_or(0) as f32;
+        let anim_id = ui.id().with("pill");
+        let anim_idx = ui
+            .ctx()
+            .animate_value_with_time(anim_id, selected_idx, 0.12);
 
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (value, label) in options {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let frame = egui::Frame::none()
+                .stroke(Stroke::new(1.0, NothingTheme::BORDER_VISIBLE))
+                .rounding(Rounding::same(8.0))
+                .inner_margin(Margin::same(2.0));
+
+            frame.show(ui, |ui| {
+                let inner_h = 40.0;
+                let total_w = btn_w * n;
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(total_w, inner_h), egui::Sense::hover());
+
+                let pill = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + anim_idx * btn_w, rect.top()),
+                    Vec2::new(btn_w, inner_h),
+                );
+                ui.painter()
+                    .rect_filled(pill, Rounding::same(6.0), NothingTheme::TEXT_DISPLAY);
+
+                for (i, (value, label)) in options.iter().enumerate() {
+                    let seg = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + i as f32 * btn_w, rect.top()),
+                        Vec2::new(btn_w, inner_h),
+                    );
                     let selected = *current == *value;
-                    let fill = if selected {
-                        NothingTheme::TEXT_DISPLAY
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let text_color = if selected {
-                        NothingTheme::BLACK
-                    } else if enabled {
-                        NothingTheme::TEXT_SECONDARY
-                    } else {
+                    // Cross-fade label while the pill slides under neighboring segments.
+                    let prox = 1.0 - (anim_idx - i as f32).abs().clamp(0.0, 1.0);
+                    let text_color = if !enabled {
                         NothingTheme::TEXT_DISABLED
+                    } else {
+                        lerp_color(NothingTheme::TEXT_SECONDARY, NothingTheme::BLACK, prox)
                     };
 
-                    let btn = egui::Button::new(
-                        egui::RichText::new(*label)
-                            .font(NothingTheme::font_button())
-                            .color(text_color),
-                    )
-                    .fill(fill)
-                    .stroke(Stroke::NONE)
-                    .rounding(Rounding::same(6.0))
-                    .min_size(Vec2::new(btn_w, 40.0));
-
-                    if ui.add_sized(Vec2::new(btn_w, 40.0), btn).clicked() {
+                    let resp = ui.interact(
+                        seg,
+                        ui.id().with(i),
+                        if enabled {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        },
+                    );
+                    if resp.clicked() {
                         *current = *value;
                     }
+                    if enabled && resp.hovered() && !selected {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+
+                    ui.painter().text(
+                        seg.center(),
+                        egui::Align2::CENTER_CENTER,
+                        *label,
+                        NothingTheme::font_button(),
+                        text_color,
+                    );
                 }
             });
         });
     });
 }
 
+/// Single-line picker matching segmented chrome (replaces stock ComboBox).
+/// One option → static selected bar. Several → click opens a matching menu.
+pub fn choice_bar(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    current: &mut usize,
+    labels: &[String],
+    enabled: bool,
+    width: f32,
+) {
+    if labels.is_empty() {
+        return;
+    }
+    *current = (*current).min(labels.len() - 1);
+    let multi = labels.len() > 1;
+    let popup_id = ui.make_persistent_id(("choice_bar", &id_salt));
+
+    ui.push_id(id_salt, |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            let frame = egui::Frame::none()
+                .stroke(Stroke::new(1.0, NothingTheme::BORDER_VISIBLE))
+                .rounding(Rounding::same(8.0))
+                .inner_margin(Margin::same(2.0));
+
+            frame.show(ui, |ui| {
+                let size = Vec2::new((width - 4.0).max(40.0), 40.0);
+                let sense = if enabled && multi {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                };
+                let (rect, resp) = ui.allocate_exact_size(size, sense);
+
+                ui.painter()
+                    .rect_filled(rect, Rounding::same(6.0), NothingTheme::TEXT_DISPLAY);
+
+                let label = truncate_middle(&labels[*current], 42);
+                let text_galley = ui.painter().layout_no_wrap(
+                    label,
+                    NothingTheme::font_button(),
+                    NothingTheme::BLACK,
+                );
+                let text_pos = if multi {
+                    egui::pos2(rect.left() + 14.0, rect.center().y - text_galley.size().y / 2.0)
+                } else {
+                    egui::pos2(
+                        rect.center().x - text_galley.size().x / 2.0,
+                        rect.center().y - text_galley.size().y / 2.0,
+                    )
+                };
+                ui.painter()
+                    .galley(text_pos, text_galley, NothingTheme::BLACK);
+
+                if multi {
+                    ui.painter().text(
+                        rect.right_center() - Vec2::new(14.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        "▾",
+                        NothingTheme::font_label(),
+                        NothingTheme::BLACK,
+                    );
+                }
+
+                if enabled && multi && resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(popup_id));
+                }
+
+                egui::popup_below_widget(
+                    ui,
+                    popup_id,
+                    &resp,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(rect.width());
+                        egui::Frame::none()
+                            .fill(NothingTheme::SURFACE_RAISED)
+                            .stroke(Stroke::new(1.0, NothingTheme::BORDER_VISIBLE))
+                            .inner_margin(Margin::symmetric(8.0, 6.0))
+                            .show(ui, |ui| {
+                                for (i, label) in labels.iter().enumerate() {
+                                    let selected = i == *current;
+                                    let color = if selected {
+                                        NothingTheme::TEXT_DISPLAY
+                                    } else {
+                                        NothingTheme::TEXT_SECONDARY
+                                    };
+                                    let r = ui.add_sized(
+                                        Vec2::new(rect.width() - 16.0, 32.0),
+                                        egui::Button::new(
+                                            egui::RichText::new(label)
+                                                .font(NothingTheme::font_button())
+                                                .color(color),
+                                        )
+                                        .fill(if selected {
+                                            NothingTheme::SURFACE
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        })
+                                        .stroke(Stroke::NONE)
+                                        .rounding(Rounding::same(4.0)),
+                                    );
+                                    if r.clicked() {
+                                        *current = i;
+                                        ui.memory_mut(|m| m.close_popup());
+                                    }
+                                }
+                            });
+                    },
+                );
+            });
+        });
+    });
+}
+
+/// Progressive-disclosure toggle for secondary settings (Hick's Law).
+pub fn more_toggle(ui: &mut egui::Ui, open: &mut bool, width: f32) -> egui::Response {
+    let label = if *open { "LESS  ▲" } else { "MORE  ▼" };
+    let size = Vec2::new(width, 32.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover_t = ui
+        .ctx()
+        .animate_value_with_time(resp.id.with("more_hov"), if resp.hovered() { 1.0 } else { 0.0 }, 0.1);
+    let color = lerp_color(
+        NothingTheme::TEXT_SECONDARY,
+        NothingTheme::TEXT_PRIMARY,
+        hover_t,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        NothingTheme::font_label(),
+        color,
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        *open = !*open;
+    }
+    resp
+}
+
 pub enum RunButtonState {
     Ready,
     Disabled,
     Processing,
+}
+
+pub enum SuggestButtonState {
+    Ready,
+    Disabled,
+    Analyzing,
+}
+
+/// Secondary control (MORE weight) for suggest-settings.
+pub fn suggest_button(
+    ui: &mut egui::Ui,
+    icons: &crate::icons::Icons,
+    state: SuggestButtonState,
+    width: f32,
+) -> egui::Response {
+    let enabled = matches!(state, SuggestButtonState::Ready);
+    let (label, color, icon) = match state {
+        SuggestButtonState::Ready => (
+            "SUGGEST",
+            NothingTheme::TEXT_SECONDARY,
+            Icon::MagicWand,
+        ),
+        SuggestButtonState::Disabled => (
+            "SUGGEST",
+            NothingTheme::TEXT_DISABLED,
+            Icon::MagicWand,
+        ),
+        SuggestButtonState::Analyzing => (
+            "ANALYZING…",
+            NothingTheme::TEXT_PRIMARY,
+            Icon::CircleNotch,
+        ),
+    };
+
+    let size = Vec2::new(width, 32.0);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+
+    let hover_t = ui.ctx().animate_value_with_time(
+        resp.id.with("suggest_hov"),
+        if enabled && resp.hovered() { 1.0 } else { 0.0 },
+        0.1,
+    );
+    let color = if enabled {
+        lerp_color(color, NothingTheme::TEXT_PRIMARY, hover_t)
+    } else {
+        color
+    };
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let icon_d = 14.0;
+    let gap = 8.0;
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), NothingTheme::font_label(), color);
+    let group_w = icon_d + gap + galley.size().x;
+    let start_x = rect.center().x - group_w / 2.0;
+    let cy = rect.center().y;
+    let spin = if matches!(state, SuggestButtonState::Analyzing) {
+        ui.ctx().input(|i| i.time as f32) * 4.0
+    } else {
+        0.0
+    };
+    icons.paint_at_rotated(
+        ui,
+        icon,
+        egui::pos2(start_x + icon_d / 2.0, cy),
+        icon_d,
+        color,
+        spin,
+    );
+    ui.painter().galley(
+        egui::pos2(start_x + icon_d + gap, cy - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+
+    resp
 }
 
 pub fn run_button(

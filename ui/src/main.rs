@@ -5,6 +5,7 @@ mod models;
 mod onnx;
 mod paths;
 mod preview;
+mod suggest;
 mod theme;
 mod worker;
 

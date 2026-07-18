@@ -136,6 +136,25 @@ if [[ -n "$ONNX_SRC" ]]; then
 fi
 
 echo ""
+echo "==> Suggest classifier (EfficientNet-B0, optional)"
+SUGGEST_DIR="$DEST/models/suggest"
+mkdir -p "$SUGGEST_DIR"
+SUGGEST_ONNX="$CACHE/medium_classify.onnx"
+SUGGEST_URL="https://github.com/lasaths/upscale/releases/download/medium-classify-v1/medium_classify.onnx"
+# Hosted release asset (ONNX export of Mitchins/image-medium-classifier-efficientnet-b0-v1).
+if [[ -f "$SUGGEST_ONNX" ]]; then
+  echo "  cached $(basename "$SUGGEST_ONNX")"
+  cp "$SUGGEST_ONNX" "$SUGGEST_DIR/medium_classify.onnx"
+  echo "  installed medium_classify.onnx"
+elif curl -fsSL --retry 3 -o "$SUGGEST_ONNX" "$SUGGEST_URL"; then
+  cp "$SUGGEST_ONNX" "$SUGGEST_DIR/medium_classify.onnx"
+  echo "  installed medium_classify.onnx"
+else
+  rm -f "$SUGGEST_ONNX"
+  echo "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
+fi
+
+echo ""
 echo "Done. Installed:"
 ls -1 "$DEST" | grep -v models
 echo "Models:"

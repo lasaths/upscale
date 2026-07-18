@@ -114,9 +114,17 @@ cargo run --release
 - **Drop** images (or a folder) onto the window, or click to open a file picker.
 - Supported inputs: `jpg`, `jpeg`, `png`, `webp`.
 - Pick an **engine**, **model**, **scale**, optional **denoise** (waifu2x /
-  Real-CUGAN), **TTA**, and **output format**.
+  Real-CUGAN), **TTA**, and **output format** — or click **Suggest** to classify
+  the preview image (anime / real / rendered) and apply a preset.
 - Press **Run** (or `Enter`). Outputs are written next to each input as
   `<name>_upscaled.<ext>`.
+
+### Suggest
+
+Uses a tiny EfficientNet-B0 ONNX classifier
+([Mitchins/image-medium-classifier-efficientnet-b0-v1](https://huggingface.co/Mitchins/image-medium-classifier-efficientnet-b0-v1),
+OpenRAIL) downloaded by setup into `models/suggest/medium_classify.onnx`.
+Classifies the **previewed** queue item only; does not start an upscale.
 
 ### Real-ESRGAN models
 

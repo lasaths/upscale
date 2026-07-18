@@ -6,13 +6,17 @@ use crate::models::{
 use crate::onnx;
 use crate::paths::Paths;
 use crate::preview::PreviewCache;
+use crate::suggest::{self, SuggestedSettings};
 use crate::theme::{
-    label_caps, progress_bar, run_button, segmented, setting_hint, setting_row, truncate_middle, NothingTheme,
-    RunButtonState, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL,
+    choice_bar, label_caps, more_toggle, progress_bar, run_button, segmented, setting_hint,
+    setting_row, suggest_button, truncate_middle, NothingTheme, RunButtonState, SuggestButtonState,
+    SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL,
 };
 use crate::worker::{spawn_onnx_worker, spawn_worker, WorkerHandle};
 use eframe::egui::{self, Margin, Rect, Sense, Stroke, Vec2};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Clone, Debug)]
 pub struct QueueItem {
@@ -46,7 +50,16 @@ pub struct UpscaleApp {
     preview_cache: PreviewCache,
     preview_idx: usize,
     was_processing: bool,
+    /// Progressive disclosure for TTA / format / denoise (secondary path).
+    show_advanced: bool,
+    /// Brief post-run pulse for the status check (0..=1).
+    done_pulse: f32,
     icons: Icons,
+    /// Background suggest-settings result channel.
+    suggest_rx: Option<mpsc::Receiver<Result<SuggestedSettings, String>>>,
+    /// Status under SUGGEST (`Detected anime · …`); fades after apply.
+    suggest_status: Option<String>,
+    suggest_status_ttl: f32,
 }
 
 impl UpscaleApp {
@@ -72,8 +85,108 @@ impl UpscaleApp {
             preview_cache: PreviewCache::new(),
             preview_idx: 0,
             was_processing: false,
+            show_advanced: false,
+            done_pulse: 0.0,
             icons,
+            suggest_rx: None,
+            suggest_status: None,
+            suggest_status_ttl: 0.0,
         }
+    }
+
+    fn is_suggesting(&self) -> bool {
+        self.suggest_rx.is_some()
+    }
+
+    fn suggest_button_state(&self) -> SuggestButtonState {
+        if self.is_suggesting() {
+            SuggestButtonState::Analyzing
+        } else if self.can_suggest() {
+            SuggestButtonState::Ready
+        } else {
+            SuggestButtonState::Disabled
+        }
+    }
+
+    fn can_suggest(&self) -> bool {
+        !self.is_processing()
+            && !self.is_suggesting()
+            && !self.queue.is_empty()
+            && self
+                .paths
+                .as_ref()
+                .is_ok_and(|p| p.suggest_available() && p.backends.any_available())
+    }
+
+    fn clear_suggest_status(&mut self) {
+        self.suggest_status = None;
+        self.suggest_status_ttl = 0.0;
+    }
+
+    fn start_suggest(&mut self) {
+        if !self.can_suggest() {
+            return;
+        }
+        let Ok(paths) = self.paths.as_ref() else {
+            return;
+        };
+        let Some(model) = paths.suggest_model.clone() else {
+            self.suggest_status = Some("Suggest model missing — re-run setup".into());
+            self.suggest_status_ttl = 4.0;
+            return;
+        };
+        let Some(item) = self.queue.get(self.preview_idx) else {
+            return;
+        };
+        let image = item.input.clone();
+        let backends = paths.backends.clone();
+
+        let (tx, rx) = mpsc::channel();
+        self.suggest_rx = Some(rx);
+        self.suggest_status = Some("Reading image…".into());
+        self.suggest_status_ttl = 0.0;
+
+        thread::spawn(move || {
+            let result = suggest::classify(&model, &image)
+                .and_then(|classified| suggest::suggest_settings(&classified, &backends));
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_suggest(&mut self) {
+        let Some(rx) = &self.suggest_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(settings)) => {
+                self.suggest_rx = None;
+                self.apply_suggested(&settings);
+            }
+            Ok(Err(err)) => {
+                self.suggest_rx = None;
+                self.suggest_status = Some(format!("Suggest failed: {err}"));
+                self.suggest_status_ttl = 4.0;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.suggest_rx = None;
+                self.suggest_status = Some("Suggest failed: worker stopped".into());
+                self.suggest_status_ttl = 4.0;
+            }
+        }
+    }
+
+    fn apply_suggested(&mut self, settings: &SuggestedSettings) {
+        self.algorithm = settings.algorithm;
+        self.variant = settings.variant;
+        self.scale = settings.scale;
+        if settings.algorithm.supports_denoise() {
+            self.denoise = settings.denoise;
+        } else {
+            self.denoise = settings.algorithm.default_denoise();
+        }
+        self.suggest_status = Some(settings.status_line());
+        self.suggest_status_ttl = 4.0;
     }
 
     fn backend_available(&self) -> bool {
@@ -204,6 +317,20 @@ impl UpscaleApp {
         }
     }
 
+    fn remove_queue_item(&mut self, idx: usize) {
+        if idx >= self.queue.len() || self.is_processing() {
+            return;
+        }
+        self.queue.remove(idx);
+        if self.queue.is_empty() {
+            self.preview_idx = 0;
+        } else if self.preview_idx >= self.queue.len() {
+            self.preview_idx = self.queue.len() - 1;
+        } else if idx < self.preview_idx {
+            self.preview_idx -= 1;
+        }
+    }
+
     fn open_file_dialog(&mut self) {
         if self.is_processing() {
             return;
@@ -290,6 +417,7 @@ impl UpscaleApp {
                 }
             }
             self.run_state = RunState::Done;
+            self.done_pulse = 1.0;
             self.worker = None;
         }
     }
@@ -358,17 +486,14 @@ impl UpscaleApp {
         // Reserve room for the queue (if shown), settings strip, CTA and footer,
         // then let the preview absorb whatever vertical space is left so the hero
         // grows with the window instead of leaving dead space.
-        let queue_reserve = if self.queue.len() > 1 {
+        let queue_reserve = if !self.queue.is_empty() {
             40.0 + (self.queue.len().min(6) as f32) * 24.0
         } else {
             0.0
         };
-        let denoise_reserve = if self.algorithm.supports_denoise() {
-            44.0
-        } else {
-            0.0
-        };
-        let reserve = 490.0 + queue_reserve + denoise_reserve;
+        // Advanced (denoise/TTA/format) lives behind MORE — keep hero tall by default.
+        let advanced_reserve = if self.show_advanced { 140.0 } else { 36.0 };
+        let reserve = 430.0 + queue_reserve + advanced_reserve;
         let height = (available.y - reserve).clamp(200.0, (available.y * 0.72).max(200.0));
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(available.x, height), Sense::click_and_drag());
@@ -504,7 +629,7 @@ impl UpscaleApp {
                 }
             }
             let prev = self.algorithm;
-            segmented(ui, &mut self.algorithm, &options, settings_enabled, w);
+            segmented(ui, "engine", &mut self.algorithm, &options, settings_enabled, w);
             if self.algorithm != prev {
                 on_algorithm_changed(
                     self.algorithm,
@@ -520,7 +645,7 @@ impl UpscaleApp {
     }
 
     fn draw_queue(&mut self, ui: &mut egui::Ui) {
-        if self.queue.len() <= 1 {
+        if self.queue.is_empty() {
             return;
         }
         ui.add_space(SPACE_MD);
@@ -535,6 +660,9 @@ impl UpscaleApp {
             label_caps(ui, &format!("QUEUE · {}", self.queue.len()));
         });
         ui.add_space(SPACE_SM);
+        let can_edit = !self.is_processing();
+        let mut remove_idx: Option<usize> = None;
+        let mut select_idx: Option<usize> = None;
         egui::Frame::none()
             .fill(NothingTheme::SURFACE_RAISED)
             .stroke(Stroke::new(1.0, NothingTheme::BORDER))
@@ -562,7 +690,7 @@ impl UpscaleApp {
                         );
                         let resp = ui.selectable_label(
                             false,
-                            egui::RichText::new(truncate_middle(&file_label(&item.input), 32))
+                            egui::RichText::new(truncate_middle(&file_label(&item.input), 28))
                                 .font(NothingTheme::font_body())
                                 .color(name_color)
                                 .family(egui::FontFamily::Monospace),
@@ -573,17 +701,48 @@ impl UpscaleApp {
                                 .color(NothingTheme::TEXT_DISABLED),
                         );
                         ui.label(
-                            egui::RichText::new(truncate_middle(&file_label(&item.output), 32))
+                            egui::RichText::new(truncate_middle(&file_label(&item.output), 28))
                                 .font(NothingTheme::font_body())
                                 .color(NothingTheme::TEXT_DISABLED)
                                 .family(egui::FontFamily::Monospace),
                         );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let remove = ui.add_enabled(
+                                can_edit,
+                                egui::Button::new(
+                                    egui::RichText::new("×")
+                                        .font(NothingTheme::font_label())
+                                        .color(if can_edit {
+                                            NothingTheme::TEXT_SECONDARY
+                                        } else {
+                                            NothingTheme::TEXT_DISABLED
+                                        }),
+                                )
+                                .frame(false)
+                                .min_size(Vec2::splat(20.0)),
+                            );
+                            if remove.hovered() && can_edit {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let remove = remove.on_hover_text("Remove from queue");
+                            if remove.clicked() {
+                                remove_idx = Some(idx);
+                            }
+                        });
+
                         if resp.clicked() {
-                            self.preview_idx = idx;
+                            select_idx = Some(idx);
                         }
                     });
                 }
             });
+        if let Some(idx) = select_idx {
+            self.preview_idx = idx;
+        }
+        if let Some(idx) = remove_idx {
+            self.remove_queue_item(idx);
+        }
     }
 }
 
@@ -611,7 +770,25 @@ impl eframe::App for UpscaleApp {
         }
 
         self.poll_worker();
+        self.poll_suggest();
         self.sync_preview_after_run(ctx);
+
+        if self.is_suggesting() {
+            ctx.request_repaint();
+        }
+        if self.suggest_status_ttl > 0.0 {
+            let dt = ctx.input(|i| i.unstable_dt);
+            self.suggest_status_ttl = (self.suggest_status_ttl - dt).max(0.0);
+            if self.suggest_status_ttl <= 0.0
+                && self
+                    .suggest_status
+                    .as_deref()
+                    .is_some_and(|s| s != "Reading image…")
+            {
+                self.suggest_status = None;
+            }
+            ctx.request_repaint();
+        }
 
         if let Some(worker) = &self.worker {
             let prog = worker.progress();
@@ -626,10 +803,25 @@ impl eframe::App for UpscaleApp {
             }
         }
 
-        let settings_enabled = !self.is_processing();
+        let settings_enabled = !self.is_processing() && !self.is_suggesting();
+        let settings_snapshot = (
+            self.algorithm,
+            self.variant,
+            self.scale,
+            self.denoise,
+            self.tta,
+            self.format,
+            self.onnx_model_idx,
+        );
         let progress = self.processing_progress();
         let time = ctx.input(|i| i.time as f32);
+        let dt = ctx.input(|i| i.unstable_dt);
         let spin = time * 4.0;
+
+        if self.done_pulse > 0.0 {
+            self.done_pulse = (self.done_pulse - dt / 0.35).max(0.0);
+            ctx.request_repaint();
+        }
 
         if self.is_processing() {
             ctx.request_repaint();
@@ -703,115 +895,217 @@ impl eframe::App for UpscaleApp {
                 });
                 setting_hint(ui, self.algorithm.description());
 
-                ui.add_space(SPACE_SM);
-                setting_row(ui, &self.icons, Icon::Cpu, "MODEL", |ui| {
-                    if self.algorithm.is_onnx() {
-                        let models = self
+                // MODEL — skip the control when there's nothing to choose (Hick's Law).
+                let show_model = self.algorithm.is_onnx()
+                    || self.algorithm.variant_options().len() > 1;
+                if show_model {
+                    ui.add_space(SPACE_SM);
+                    setting_row(ui, &self.icons, Icon::Cpu, "MODEL", |ui| {
+                        if self.algorithm.is_onnx() {
+                            let models = self
+                                .paths
+                                .as_ref()
+                                .map(|p| p.onnx_models.as_slice())
+                                .unwrap_or(&[]);
+                            if models.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("no .onnx in models/onnx/")
+                                        .font(NothingTheme::font_body())
+                                        .color(NothingTheme::TEXT_DISABLED),
+                                );
+                            } else {
+                                let labels: Vec<String> =
+                                    models.iter().map(|p| onnx::model_label(p)).collect();
+                                let mut idx =
+                                    self.onnx_model_idx.min(models.len().saturating_sub(1));
+                                let w = ui.available_width();
+                                choice_bar(
+                                    ui,
+                                    "onnx_model",
+                                    &mut idx,
+                                    &labels,
+                                    settings_enabled,
+                                    w,
+                                );
+                                self.onnx_model_idx = idx;
+                            }
+                        } else {
+                            let w = ui.available_width();
+                            let options = self.algorithm.variant_options();
+                            let mut picked = self.variant;
+                            segmented(ui, "model", &mut picked, options, settings_enabled, w);
+                            self.variant = picked;
+                        }
+                    });
+                    setting_hint(
+                        ui,
+                        if self.algorithm.is_onnx() {
+                            self.onnx_model_description()
+                        } else {
+                            self.variant.description()
+                        },
+                    );
+                }
+
+                // SCALE — RealSR/ONNX are 4× only; hero already shows the multiplier.
+                let scales = self.algorithm.valid_scales();
+                if scales.len() > 1 {
+                    ui.add_space(SPACE_SM);
+                    setting_row(ui, &self.icons, Icon::ArrowsOut, "SCALE", |ui| {
+                        let w = ui.available_width();
+                        let scale_labels: Vec<(u8, String)> =
+                            scales.iter().map(|&s| (s, s.to_string())).collect();
+                        let scale_opts: Vec<(u8, &str)> = scale_labels
+                            .iter()
+                            .map(|(v, l)| (*v, l.as_str()))
+                            .collect();
+                        let mut scale = self.algorithm.clamp_scale(self.scale);
+                        segmented(ui, "scale", &mut scale, &scale_opts, settings_enabled, w);
+                        self.scale = scale;
+                    });
+                }
+
+                // SUGGEST + MORE — same tertiary weight, one row (no orphan float).
+                ui.add_space(SPACE_MD);
+                let row_w = ui.available_width();
+                let gap = SPACE_SM;
+                let half = ((row_w - gap) / 2.0).max(0.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let suggest_state = self.suggest_button_state();
+                    let mut suggest_resp =
+                        suggest_button(ui, &self.icons, suggest_state, half);
+                    if !self.can_suggest() && !self.is_suggesting() {
+                        let tip = if self.queue.is_empty() {
+                            "Add an image first"
+                        } else if self
                             .paths
                             .as_ref()
-                            .map(|p| p.onnx_models.as_slice())
-                            .unwrap_or(&[]);
-                        if models.is_empty() {
-                            ui.label(
-                                egui::RichText::new("no .onnx in models/onnx/")
-                                    .font(NothingTheme::font_body())
-                                    .color(NothingTheme::TEXT_DISABLED),
-                            );
+                            .ok()
+                            .and_then(|p| p.suggest_model.as_ref())
+                            .is_none()
+                        {
+                            "Suggest model missing — re-run setup"
+                        } else if self.is_processing() {
+                            "Wait for upscale to finish"
                         } else {
-                            let labels: Vec<String> =
-                                models.iter().map(|p| onnx::model_label(p)).collect();
-                            let mut idx = self.onnx_model_idx.min(models.len().saturating_sub(1));
-                            egui::ComboBox::from_id_salt("onnx_model")
-                                .selected_text(&labels[idx])
-                                .width(ui.available_width())
-                                .show_ui(ui, |ui| {
-                                    for (i, label) in labels.iter().enumerate() {
-                                        ui.selectable_value(&mut idx, i, label);
-                                    }
-                                });
-                            self.onnx_model_idx = idx;
-                        }
-                    } else {
-                        let w = ui.available_width();
-                        let options = self.algorithm.variant_options();
-                        let mut picked = self.variant;
-                        segmented(ui, &mut picked, options, settings_enabled, w);
-                        self.variant = picked;
+                            "No upscaler engine available"
+                        };
+                        suggest_resp = suggest_resp.on_hover_text(tip);
                     }
+                    if suggest_resp.clicked() {
+                        self.start_suggest();
+                    }
+                    more_toggle(ui, &mut self.show_advanced, half);
                 });
-                setting_hint(
-                    ui,
-                    if self.algorithm.is_onnx() {
-                        self.onnx_model_description()
+                if let Some(status) = &self.suggest_status {
+                    let fade = if self.suggest_status_ttl > 0.0
+                        && !status.starts_with("Suggest failed")
+                        && status != "Reading image…"
+                    {
+                        (self.suggest_status_ttl / 4.0).clamp(0.0, 1.0)
                     } else {
-                        self.variant.description()
-                    },
-                );
-
-                ui.add_space(SPACE_SM);
-                setting_row(ui, &self.icons, Icon::ArrowsOut, "SCALE", |ui| {
-                    let w = ui.available_width();
-                    let scales: Vec<(u8, String)> = self
-                        .algorithm
-                        .valid_scales()
-                        .iter()
-                        .map(|&s| (s, s.to_string()))
-                        .collect();
-                    let scale_opts: Vec<(u8, &str)> = scales
-                        .iter()
-                        .map(|(v, l)| (*v, l.as_str()))
-                        .collect();
-                    let mut scale = self.algorithm.clamp_scale(self.scale);
-                    segmented(ui, &mut scale, &scale_opts, settings_enabled, w);
-                    self.scale = scale;
-                });
-
-                if self.algorithm.supports_denoise() {
-                    ui.add_space(SPACE_SM);
-                    setting_row(ui, &self.icons, Icon::Sparkle, "DENOISE", |ui| {
-                        let w = ui.available_width();
-                        let opts: Vec<(DenoiseLevel, &str)> = DenoiseLevel::ALL
-                            .iter()
-                            .map(|&d| (d, d.label()))
-                            .collect();
-                        segmented(ui, &mut self.denoise, &opts, settings_enabled, w);
-                    });
-                }
-
-                if self.algorithm.supports_tta() {
-                    ui.add_space(SPACE_SM);
-                    setting_row(ui, &self.icons, Icon::Sparkle, "TTA", |ui| {
-                        let w = ui.available_width();
-                        let mut tta_on = self.tta;
-                        segmented(
-                            ui,
-                            &mut tta_on,
-                            &[(false, "OFF"), (true, "ON")],
-                            settings_enabled,
-                            w,
+                        1.0
+                    };
+                    if fade > 0.02 {
+                        ui.add_space(4.0);
+                        let base = NothingTheme::TEXT_SECONDARY;
+                        let color = egui::Color32::from_rgba_unmultiplied(
+                            base.r(),
+                            base.g(),
+                            base.b(),
+                            (base.a() as f32 * fade).round() as u8,
                         );
-                        self.tta = tta_on;
+                        ui.label(
+                            egui::RichText::new(status)
+                                .font(NothingTheme::font_label())
+                                .color(color),
+                        );
+                    }
+                }
+                let adv_t = ctx.animate_bool_with_time(
+                    egui::Id::new("loku_advanced"),
+                    self.show_advanced,
+                    0.14,
+                );
+                if adv_t > 0.01 {
+                    ui.scope(|ui| {
+                        ui.multiply_opacity(adv_t);
+                        if self.algorithm.supports_denoise() {
+                            ui.add_space(SPACE_SM);
+                            setting_row(ui, &self.icons, Icon::Sparkle, "DENOISE", |ui| {
+                                let w = ui.available_width();
+                                let opts: Vec<(DenoiseLevel, &str)> = DenoiseLevel::ALL
+                                    .iter()
+                                    .map(|&d| (d, d.label()))
+                                    .collect();
+                                segmented(ui, "denoise", &mut self.denoise, &opts, settings_enabled, w);
+                            });
+                            setting_hint(ui, "−1 = conserve detail · higher = smoother");
+                        }
+
+                        if self.algorithm.supports_tta() {
+                            ui.add_space(SPACE_SM);
+                            setting_row(ui, &self.icons, Icon::Sparkle, "TTA", |ui| {
+                                let w = ui.available_width();
+                                let mut tta_on = self.tta;
+                                segmented(
+                                    ui,
+                                    "tta",
+                                    &mut tta_on,
+                                    &[(false, "OFF"), (true, "ON")],
+                                    settings_enabled,
+                                    w,
+                                );
+                                self.tta = tta_on;
+                            });
+                            setting_hint(ui, "Slower · averages 8 orientations for fewer artifacts");
+                        }
+
+                        ui.add_space(SPACE_SM);
+                        let prev_format = self.format;
+                        setting_row(ui, &self.icons, Icon::FilePng, "FORMAT", |ui| {
+                            let w = ui.available_width();
+                            segmented(
+                                ui,
+                                "format",
+                                &mut self.format,
+                                &[
+                                    (OutputFormat::Png, "PNG"),
+                                    (OutputFormat::Jpg, "JPG"),
+                                    (OutputFormat::Webp, "WEBP"),
+                                ],
+                                settings_enabled,
+                                w,
+                            );
+                        });
+                        if self.format != prev_format {
+                            self.sync_queue_outputs();
+                        }
                     });
                 }
+                if self.show_advanced || adv_t > 0.01 {
+                    ctx.request_repaint();
+                }
 
-                ui.add_space(SPACE_SM);
-                let prev_format = self.format;
-                setting_row(ui, &self.icons, Icon::FilePng, "FORMAT", |ui| {
-                    let w = ui.available_width();
-                    segmented(
-                        ui,
-                        &mut self.format,
-                        &[
-                            (OutputFormat::Png, "PNG"),
-                            (OutputFormat::Jpg, "JPG"),
-                            (OutputFormat::Webp, "WEBP"),
-                        ],
-                        settings_enabled,
-                        w,
-                    );
-                });
-                if self.format != prev_format {
-                    self.sync_queue_outputs();
+                let settings_now = (
+                    self.algorithm,
+                    self.variant,
+                    self.scale,
+                    self.denoise,
+                    self.tta,
+                    self.format,
+                    self.onnx_model_idx,
+                );
+                if settings_now != settings_snapshot && !self.is_suggesting() {
+                    // Manual tweak after a suggestion — drop the ownership cue.
+                    if self
+                        .suggest_status
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("Detected") || s.starts_with("Low confidence"))
+                    {
+                        self.clear_suggest_status();
+                    }
                 }
 
                 ui.add_space(SPACE_XL);
@@ -902,6 +1196,8 @@ impl eframe::App for UpscaleApp {
                         } else {
                             NothingTheme::TEXT_SECONDARY
                         };
+                        let icon_sz = NothingTheme::ICON_SIZE
+                            * (1.0 + 0.22 * self.done_pulse * self.done_pulse);
                         let (icon_rect, _) = ui.allocate_exact_size(
                             Vec2::splat(NothingTheme::ICON_SIZE),
                             egui::Sense::hover(),
@@ -910,7 +1206,7 @@ impl eframe::App for UpscaleApp {
                             ui,
                             status_icon,
                             icon_rect.center(),
-                            NothingTheme::ICON_SIZE,
+                            icon_sz,
                             tint,
                             if self.is_processing() { spin } else { 0.0 },
                         );

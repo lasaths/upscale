@@ -110,6 +110,26 @@ if ($OnnxFile) {
 }
 
 Write-Host ""
+Write-Host "==> Suggest classifier (EfficientNet-B0, optional)"
+$SuggestDir = Join-Path $Dest "models\suggest"
+New-Item -ItemType Directory -Force -Path $SuggestDir | Out-Null
+$SuggestOnnx = Join-Path $Cache "medium_classify.onnx"
+$SuggestUrl = "https://github.com/lasaths/upscale/releases/download/medium-classify-v1/medium_classify.onnx"
+try {
+    if (-not (Test-Path $SuggestOnnx)) {
+        Write-Host "  downloading medium_classify.onnx..."
+        Invoke-WebRequest -Uri $SuggestUrl -OutFile $SuggestOnnx -UseBasicParsing
+    } else {
+        Write-Host "  cached medium_classify.onnx"
+    }
+    Copy-Item $SuggestOnnx (Join-Path $SuggestDir "medium_classify.onnx") -Force
+    Write-Host "  installed medium_classify.onnx"
+} catch {
+    if (Test-Path $SuggestOnnx) { Remove-Item $SuggestOnnx -Force }
+    Write-Host "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
+}
+
+Write-Host ""
 Write-Host "Done. Installed:"
 Get-ChildItem $Dest -File | ForEach-Object { $_.Name }
 Write-Host "Models:"
