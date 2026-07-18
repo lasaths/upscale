@@ -1,14 +1,35 @@
 # Loku
 
-A minimal desktop image upscaler for Windows. Drag images in, pick an engine and
-model, hit run. Loku is a native [egui](https://github.com/emilk/egui) front-end
-that drives ncnn-vulkan upscalers under the hood — batch queue, live per-image
-progress, and a before/after preview.
+A minimal desktop image upscaler. Drag images in, pick an engine and model, hit
+run. Loku is a native [egui](https://github.com/emilk/egui) front-end that drives
+ncnn-vulkan upscalers under the hood — batch queue, live per-image progress, and
+a before/after preview.
+
+## Install
+
+**macOS / Linux (Homebrew):**
+```bash
+brew install lasaths/tap/loku
+```
+
+**macOS / Linux (script):**
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lasaths/upscale/releases/latest/download/upscale-ui-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/lasaths/upscale/releases/latest/download/upscale-ui-installer.ps1 | iex"
+```
+
+Or grab zips from [Releases](https://github.com/lasaths/upscale/releases). After install, run the setup script once to download ncnn engines (see Setup).
+
+> winget: not in the official catalog yet — use the PowerShell installer above. Say the word if you want a winget PR filed.
 
 ## Requirements
 
-- Windows 10/11 with a Vulkan-capable GPU (macOS/Linux supported for development)
-- [Rust](https://rustup.rs/) (MSVC toolchain on Windows)
+- Windows 10/11 or macOS with a Vulkan-capable GPU (Linux ok for development)
+- [Rust](https://rustup.rs/) only if building from source (MSVC toolchain on Windows)
 - ncnn-vulkan binaries + models (not committed — see Setup)
 
 ## Setup

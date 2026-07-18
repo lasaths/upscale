@@ -1,7 +1,19 @@
 [package]
 name = "upscale-ui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+description = "Loku — minimal desktop image upscaler"
+homepage = "https://github.com/lasaths/upscale"
+repository = "https://github.com/lasaths/upscale"
+license = "MIT"
+readme = "../README.md"
+
+[[bin]]
+name = "loku"
+path = "src/main.rs"
+
+[package.metadata.dist]
+formula = "loku"
 
 [dependencies]
 eframe = "0.29"
@@ -22,3 +34,7 @@ tempfile = "3"
 [profile.release]
 lto = true
 strip = true
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
