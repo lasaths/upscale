@@ -118,22 +118,24 @@ else
 fi
 
 echo ""
-echo "==> ONNX (Real-ESRGAN x4plus, optional)"
+echo "==> ONNX (UltraSharp V2 + PurePhoto, optional)"
 ONNX_DIR="$DEST/models/onnx"
 mkdir -p "$ONNX_DIR"
-ONNX_ZIP="$CACHE/real_esrgan_x4plus-onnx-float.zip"
-fetch "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/real_esrgan_x4plus/releases/v0.50.2/real_esrgan_x4plus-onnx-float.zip" "$ONNX_ZIP"
-ONNX_EX="$CACHE/onnx-extract"
-extract_zip "$ONNX_ZIP" "$ONNX_EX"
-ONNX_SRC="$(find "$ONNX_EX" -name 'real_esrgan_x4plus.onnx' -type f | head -1)"
-if [[ -n "$ONNX_SRC" ]]; then
-  ONNX_SRC_DIR="$(dirname "$ONNX_SRC")"
-  cp "$ONNX_SRC" "$ONNX_DIR/real_esrgan_x4plus.onnx"
-  if [[ -f "$ONNX_SRC_DIR/real_esrgan_x4plus.data" ]]; then
-    cp "$ONNX_SRC_DIR/real_esrgan_x4plus.data" "$ONNX_DIR/real_esrgan_x4plus.data"
-  fi
-  echo "  installed real_esrgan_x4plus.onnx (+ external weights if present)"
-fi
+# Drop the old Real-ESRGAN ONNX default (ncnn covers it).
+rm -f "$ONNX_DIR/real_esrgan_x4plus.onnx" "$ONNX_DIR/real_esrgan_x4plus.data"
+
+install_onnx() {
+  local name="$1" url="$2"
+  local cached="$CACHE/$name"
+  fetch "$url" "$cached"
+  cp "$cached" "$ONNX_DIR/$name"
+  echo "  installed $name"
+}
+
+install_onnx "4x-UltraSharpV2.onnx" \
+  "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4x-UltraSharpV2_fp32_op17.onnx"
+install_onnx "4xPurePhoto-RealPLSKR.onnx" \
+  "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xPurePhoto-RealPLSKR.onnx"
 
 echo ""
 echo "==> Suggest classifiers (deepghs cascade, optional)"

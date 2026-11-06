@@ -92,22 +92,24 @@ if (Test-Path (Join-Path $RealsrDir "models-DF2K")) {
 }
 
 Write-Host ""
-Write-Host "==> ONNX (Real-ESRGAN x4plus, optional)"
+Write-Host "==> ONNX (UltraSharp V2 + PurePhoto, optional)"
 $OnnxDir = Join-Path $Dest "models\onnx"
 New-Item -ItemType Directory -Force -Path $OnnxDir | Out-Null
-$OnnxZip = Join-Path $Cache "real_esrgan_x4plus-onnx-float.zip"
-Fetch "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/real_esrgan_x4plus/releases/v0.50.2/real_esrgan_x4plus-onnx-float.zip" $OnnxZip
-$OnnxEx = Join-Path $Cache "onnx-extract"
-Extract $OnnxZip $OnnxEx
-$OnnxFile = Get-ChildItem -Path $OnnxEx -Recurse -Filter "real_esrgan_x4plus.onnx" | Select-Object -First 1
-if ($OnnxFile) {
-    Copy-Item $OnnxFile.FullName (Join-Path $OnnxDir "real_esrgan_x4plus.onnx") -Force
-    $DataFile = Join-Path $OnnxFile.DirectoryName "real_esrgan_x4plus.data"
-    if (Test-Path $DataFile) {
-        Copy-Item $DataFile (Join-Path $OnnxDir "real_esrgan_x4plus.data") -Force
-    }
-    Write-Host "  installed real_esrgan_x4plus.onnx (+ external weights if present)"
+# Drop the old Real-ESRGAN ONNX default (ncnn covers it).
+Remove-Item (Join-Path $OnnxDir "real_esrgan_x4plus.onnx") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $OnnxDir "real_esrgan_x4plus.data") -Force -ErrorAction SilentlyContinue
+
+function Install-OnnxModel([string]$DestName, [string]$Url) {
+    $cached = Join-Path $Cache $DestName
+    Fetch $Url $cached
+    Copy-Item $cached (Join-Path $OnnxDir $DestName) -Force
+    Write-Host "  installed $DestName"
 }
+
+Install-OnnxModel "4x-UltraSharpV2.onnx" `
+    "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4x-UltraSharpV2_fp32_op17.onnx"
+Install-OnnxModel "4xPurePhoto-RealPLSKR.onnx" `
+    "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xPurePhoto-RealPLSKR.onnx"
 
 Write-Host ""
 Write-Host "==> Suggest classifiers (deepghs cascade, optional)"

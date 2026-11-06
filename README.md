@@ -172,13 +172,17 @@ Higher-quality models via the embedded `ort` crate. Uses **CoreML** on macOS and
 
 | Model | Best for |
 |-------|----------|
-| Any `.onnx` in `models/onnx/` | Depends on model (Real-ESRGAN, HAT, DAT, SwinIR, etc.) |
+| `4x-UltraSharpV2` | General default — photos and mixed content |
+| `4xPurePhoto-RealPLSKR` | Photos / portraits |
+| Any other `.onnx` in `models/onnx/` | Depends on model (HAT, DAT, SwinIR, etc.) |
 
-Setup downloads `real_esrgan_x4plus.onnx` (+ `.data` weights) by default. Add more models from
-[OpenModelDB](https://openmodeldb.io/) — use **FP32** exports for transformer
-models (HAT, DAT). Keep external `.data` files next to their `.onnx` (same basename).
-Models with external weights use CPU on macOS/Windows; single-file models use CoreML/DirectML.
-Tile size is read from the model (typically 128×128). Scale is detected automatically (typically 4×).
+Setup downloads UltraSharp V2 and PurePhoto by default. Add more from
+[OpenModelDB](https://openmodeldb.io/) or
+[huggingworld/onnx-image-models](https://huggingface.co/huggingworld/onnx-image-models) —
+use **FP32** exports for transformer models (HAT, DAT). Keep external `.data`
+files next to their `.onnx` (same basename). Models with external weights use
+CPU on macOS/Windows; single-file models use CoreML/DirectML. Tile size is read
+from the model (typically 128×128). Scale is detected automatically (typically 4×).
 
 ### TTA
 

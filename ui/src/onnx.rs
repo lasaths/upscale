@@ -47,7 +47,11 @@ pub fn model_description(path: &Path) -> &'static str {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if name.contains("anime") {
+    if name.contains("ultrasharp") {
+        "ONNX — UltraSharp, strong general-purpose 4×"
+    } else if name.contains("purephoto") || name.contains("realplskr") || name.contains("realplksr") {
+        "ONNX — PurePhoto, natural photos and portraits"
+    } else if name.contains("anime") {
         "ONNX — anime / illustration model"
     } else if name.contains("hat") {
         "ONNX — HAT transformer, high-quality photos (FP32)"
@@ -376,8 +380,12 @@ mod tests {
 
     #[test]
     fn smoke_upscale_if_model_present() {
-        let model = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../tools/upscale/models/onnx/real_esrgan_x4plus.onnx");
+        let onnx_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/upscale/models/onnx");
+        let model = ["4x-UltraSharpV2.onnx", "4xPurePhoto-RealPLSKR.onnx"]
+            .iter()
+            .map(|n| onnx_dir.join(n))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| onnx_dir.join("missing.onnx"));
         if !model.is_file() {
             return;
         }
