@@ -25,6 +25,7 @@ function New-LokuShortcut([string]$Path, [string]$Target) {
     $s = $w.CreateShortcut($Path)
     $s.TargetPath = $Target
     $s.WorkingDirectory = Split-Path $Target
+    $s.IconLocation = "$Target,0"
     $s.Description = "Loku image upscaler"
     $s.Save()
 }
