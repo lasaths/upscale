@@ -99,7 +99,7 @@ if (Test-Path (Join-Path $RealsrDir "models-DF2K")) {
 }
 
 Write-Host ""
-Write-Host "==> ONNX (UltraSharp V2 + PurePhoto, optional)"
+Write-Host "==> ONNX (UltraSharp V2 + PurePhoto + Nomos8k, optional)"
 $OnnxDir = Join-Path $Dest "models\onnx"
 New-Item -ItemType Directory -Force -Path $OnnxDir | Out-Null
 # Drop the old Real-ESRGAN ONNX default (ncnn covers it).
@@ -117,6 +117,8 @@ Install-OnnxModel "4x-UltraSharpV2.onnx" `
     "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4x-UltraSharpV2_fp32_op17.onnx"
 Install-OnnxModel "4xPurePhoto-RealPLSKR.onnx" `
     "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xPurePhoto-RealPLSKR.onnx"
+Install-OnnxModel "4xNomos8kDAT.onnx" `
+    "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xNomos8kDAT.onnx"
 
 Write-Host ""
 Write-Host "==> Suggest classifiers (deepghs cascade, optional)"

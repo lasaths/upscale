@@ -191,9 +191,10 @@ Higher-quality models via the embedded `ort` crate. Uses **CoreML** on macOS and
 |-------|----------|
 | `4x-UltraSharpV2` | General default — photos and mixed content |
 | `4xPurePhoto-RealPLSKR` | Photos / portraits |
+| `4xNomos8kDAT` | Archviz / CGI / natural HD — Suggest picks this for `3d` |
 | Any other `.onnx` in `models/onnx/` | Depends on model (HAT, DAT, SwinIR, etc.) |
 
-Setup downloads UltraSharp V2 and PurePhoto by default. Add more from
+Setup downloads UltraSharp V2, PurePhoto, and Nomos8k DAT by default. Add more from
 [OpenModelDB](https://openmodeldb.io/) or
 [huggingworld/onnx-image-models](https://huggingface.co/huggingworld/onnx-image-models) —
 use **FP32** exports for transformer models (HAT, DAT). Keep external `.data`
@@ -223,6 +224,8 @@ For those, use ComfyUI or the upstream Python projects.
 | `UPSCALE_ROOT` | (auto) | Override root detection (must contain `tools/upscale`). |
 | `LOKU_DATA` | `%LOCALAPPDATA%\loku` (Windows) | User data root for engines when installed via cargo-dist. |
 | `UPSCALE_GPU` | ncnn: `1` (Windows) / `0` (macOS); ONNX: auto | ncnn Vulkan device id (`-g`). For ONNX/DirectML, leave unset to auto-pick the high-performance GPU; set to force a DXGI adapter index. |
+| `UPSCALE_ONNX_TILE` | `256` | Tile edge for dynamic-shape ONNX models (64–1024). Larger = higher GPU use / more VRAM. |
+| `UPSCALE_ONNX_OVERLAP` | `32` | Overlap between ONNX tiles (feathered). Raise if you still see seams. |
 
 ## License
 

@@ -136,7 +136,7 @@ else
 fi
 
 echo ""
-echo "==> ONNX (UltraSharp V2 + PurePhoto, optional)"
+echo "==> ONNX (UltraSharp V2 + PurePhoto + Nomos8k, optional)"
 ONNX_DIR="$DEST/models/onnx"
 mkdir -p "$ONNX_DIR"
 # Drop the old Real-ESRGAN ONNX default (ncnn covers it).
@@ -154,6 +154,8 @@ install_onnx "4x-UltraSharpV2.onnx" \
   "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4x-UltraSharpV2_fp32_op17.onnx"
 install_onnx "4xPurePhoto-RealPLSKR.onnx" \
   "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xPurePhoto-RealPLSKR.onnx"
+install_onnx "4xNomos8kDAT.onnx" \
+  "https://huggingface.co/huggingworld/onnx-image-models/resolve/main/4xNomos8kDAT.onnx"
 
 echo ""
 echo "==> Suggest classifiers (deepghs cascade, optional)"

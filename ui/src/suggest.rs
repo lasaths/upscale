@@ -407,11 +407,14 @@ fn pick_preset(
             }
         }
         ContentClass::Photo => {
-            // Prefer newer ONNX defaults when present: PurePhoto for real photos,
-            // UltraSharp for mixed / 3d / not_painting.
+            // real photos → PurePhoto; CGI / archviz (3d, not_painting) → Nomos;
+            // other mixed → UltraSharp.
             let onnx = match detail {
-                "real" => pick_onnx(onnx_models, &["purephoto", "ultrasharp"]),
-                _ => pick_onnx(onnx_models, &["ultrasharp", "purephoto"]),
+                "real" => pick_onnx(onnx_models, &["purephoto", "nomos", "ultrasharp"]),
+                "3d" | "not_painting" => {
+                    pick_onnx(onnx_models, &["nomos", "ultrasharp", "purephoto"])
+                }
+                _ => pick_onnx(onnx_models, &["ultrasharp", "nomos", "purephoto"]),
             };
             if let Some(path) = onnx {
                 return Ok((
@@ -546,6 +549,7 @@ mod tests {
         let onnx = vec![
             PathBuf::from("models/onnx/4x-UltraSharpV2.onnx"),
             PathBuf::from("models/onnx/4xPurePhoto-RealPLSKR.onnx"),
+            PathBuf::from("models/onnx/4xNomos8kDAT.onnx"),
         ];
         let r = ClassifyResult {
             class: ContentClass::Photo,
@@ -563,6 +567,31 @@ mod tests {
             .to_string_lossy()
             .contains("PurePhoto"));
         assert_eq!(s.scale, 4); // ONNX only supports 4×
+    }
+
+    #[test]
+    fn cgi_prefers_onnx_nomos() {
+        let b = backends_with(&[Algorithm::RealEsrgan]);
+        let onnx = vec![
+            PathBuf::from("models/onnx/4x-UltraSharpV2.onnx"),
+            PathBuf::from("models/onnx/4xPurePhoto-RealPLSKR.onnx"),
+            PathBuf::from("models/onnx/4xNomos8kDAT.onnx"),
+        ];
+        let r = ClassifyResult {
+            class: ContentClass::Photo,
+            detail: "3d",
+            confidence: 0.94,
+            width: 1600,
+            height: 900,
+        };
+        let s = suggest_settings(&r, &b, &onnx).unwrap();
+        assert_eq!(s.algorithm, Algorithm::Onnx);
+        assert!(s
+            .onnx_model
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .contains("Nomos"));
     }
 
     #[test]

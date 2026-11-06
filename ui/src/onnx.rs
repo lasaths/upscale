@@ -7,7 +7,10 @@ use ort::value::{Tensor, ValueType};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const DEFAULT_TILE: u32 = 128;
+/// Dynamic-shape models: larger tiles keep DirectML busier (128 underfills modern GPUs).
+const DEFAULT_TILE: u32 = 256;
+/// Input-space overlap between tiles; feathered so seams don't show.
+const DEFAULT_OVERLAP: u32 = 32;
 const PROBE_SIZE: u32 = 64;
 
 pub fn discover_models(dir: &Path) -> Vec<PathBuf> {
@@ -47,7 +50,9 @@ pub fn model_description(path: &Path) -> &'static str {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if name.contains("ultrasharp") {
+    if name.contains("nomos") || name.contains("dat") {
+        "ONNX — Nomos/DAT, archviz · CGI · natural HD detail"
+    } else if name.contains("ultrasharp") {
         "ONNX — UltraSharp, strong general-purpose 4×"
     } else if name.contains("purephoto") || name.contains("realplskr") || name.contains("realplksr") {
         "ONNX — PurePhoto, natural photos and portraits"
@@ -55,8 +60,6 @@ pub fn model_description(path: &Path) -> &'static str {
         "ONNX — anime / illustration model"
     } else if name.contains("hat") {
         "ONNX — HAT transformer, high-quality photos (FP32)"
-    } else if name.contains("dat") || name.contains("nomos") {
-        "ONNX — DAT / Nomos8k, detailed photo upscale"
     } else if name.contains("swin") {
         "ONNX — SwinIR family, faithful restoration"
     } else if name.contains("realesr") || name.contains("esrgan") {
@@ -74,22 +77,84 @@ struct UpscaleSession {
     tile_size: u32,
 }
 
+fn configured_tile() -> u32 {
+    std::env::var("UPSCALE_ONNX_TILE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| (64..=1024).contains(&n))
+        .unwrap_or(DEFAULT_TILE)
+}
+
+fn configured_overlap(tile: u32) -> u32 {
+    let requested = std::env::var("UPSCALE_ONNX_OVERLAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OVERLAP);
+    // Keep at least half the tile as stride so we don't explode tile count.
+    requested.min(tile / 2)
+}
+
+fn tile_starts(len: u32, tile: u32, stride: u32) -> Vec<u32> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if len <= tile {
+        return vec![0];
+    }
+    let mut starts = Vec::new();
+    let mut x = 0u32;
+    while x + tile < len {
+        starts.push(x);
+        x = x.saturating_add(stride);
+    }
+    let last = len - tile;
+    if starts.last().copied() != Some(last) {
+        starts.push(last);
+    }
+    starts
+}
+
+fn blend_weight(x: u32, y: u32, w: u32, h: u32, overlap: u32) -> f32 {
+    if overlap == 0 || w == 0 || h == 0 {
+        return 1.0;
+    }
+    let ox = overlap.min(w / 2).max(1);
+    let oy = overlap.min(h / 2).max(1);
+    let wx = if x < ox {
+        (x + 1) as f32 / ox as f32
+    } else if x >= w.saturating_sub(ox) {
+        (w - x) as f32 / ox as f32
+    } else {
+        1.0
+    };
+    let wy = if y < oy {
+        (y + 1) as f32 / oy as f32
+    } else if y >= h.saturating_sub(oy) {
+        (h - y) as f32 / oy as f32
+    } else {
+        1.0
+    };
+    (wx * wy).clamp(0.0, 1.0)
+}
+
 fn input_tile_size(session: &Session) -> u32 {
     let Some(input) = session.inputs().first() else {
-        return DEFAULT_TILE;
+        return configured_tile();
     };
     let ValueType::Tensor { shape, .. } = input.dtype() else {
-        return DEFAULT_TILE;
+        return configured_tile();
     };
     let dims: Vec<i64> = shape.iter().copied().collect();
     if dims.len() == 4 {
         let h = dims[2];
         let w = dims[3];
+        // Fixed spatial size baked into the graph — must match exactly.
         if h > 0 && w > 0 {
             return (h as u32).max(w as u32);
         }
     }
-    DEFAULT_TILE
+    // Dynamic H/W — use a bigger tile so the discrete GPU stays fed.
+    configured_tile()
 }
 
 impl UpscaleSession {
@@ -100,10 +165,16 @@ impl UpscaleSession {
 
         ort::init().with_name("loku").commit();
 
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 8);
         let mut builder = Session::builder()
             .map_err(|e| format!("[ERROR: session builder] {e}"))?
-            .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|e| format!("[ERROR: opt level] {e}"))?;
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| format!("[ERROR: opt level] {e}"))?
+            .with_intra_threads(threads)
+            .map_err(|e| format!("[ERROR: intra threads] {e}"))?;
 
         builder = register_execution_providers(builder, &model_path)?;
 
@@ -193,34 +264,39 @@ impl UpscaleSession {
         let scale = self.scale;
         let out_w = w.saturating_mul(scale);
         let out_h = h.saturating_mul(scale);
-        let mut out = RgbImage::new(out_w, out_h);
-
         let tile = self.tile_size;
-        let tiles_x = (w + tile - 1) / tile;
-        let tiles_y = (h + tile - 1) / tile;
-        let total = (tiles_x * tiles_y).max(1) as f32;
+        let overlap = configured_overlap(tile);
+        let stride = tile.saturating_sub(overlap).max(1);
+        let xs = tile_starts(w, tile, stride);
+        let ys = tile_starts(h, tile, stride);
+        let total = (xs.len() * ys.len()).max(1) as f32;
         let mut done = 0.0f32;
 
-        for ty in 0..tiles_y {
-            for tx in 0..tiles_x {
+        // Weighted accumulation hides seams in the overlap bands.
+        let mut accum = vec![0.0f32; (out_w as usize) * (out_h as usize) * 3];
+        let mut weight = vec![0.0f32; (out_w as usize) * (out_h as usize)];
+        let overlap_out = overlap.saturating_mul(scale);
+
+        for &y0 in &ys {
+            for &x0 in &xs {
                 if cancel.load(Ordering::SeqCst) {
                     return Err("[ERROR: cancelled]".into());
                 }
-                let x0 = tx * tile;
-                let y0 = ty * tile;
-                let tw = tile.min(w - x0);
-                let th = tile.min(h - y0);
-                let tile_rgb = pad_tile_to_size(&extract_tile_rgb(img, x0, y0, tw, th), tile);
+                let tile_rgb = extract_tile_reflect(img, x0, y0, tile);
                 let input = tile_to_tensor(&tile_rgb)?;
                 let output = self.run_tensor(input)?;
-
-                paste_tile(
-                    &mut out,
-                    &tensor_to_rgb(&output),
-                    x0.saturating_mul(scale),
-                    y0.saturating_mul(scale),
-                    tw.saturating_mul(scale),
-                    th.saturating_mul(scale),
+                let up = tensor_to_rgb(&output);
+                let ox = x0.saturating_mul(scale);
+                let oy = y0.saturating_mul(scale);
+                blend_tile_into(
+                    &mut accum,
+                    &mut weight,
+                    out_w,
+                    out_h,
+                    &up,
+                    ox,
+                    oy,
+                    overlap_out,
                 );
 
                 done += 1.0;
@@ -228,7 +304,7 @@ impl UpscaleSession {
             }
         }
 
-        Ok(out)
+        Ok(normalize_accum(&accum, &weight, out_w, out_h))
     }
 }
 
@@ -291,11 +367,31 @@ fn register_execution_providers(
     Ok(builder)
 }
 
-fn extract_tile_rgb(img: &RgbImage, x0: u32, y0: u32, w: u32, h: u32) -> RgbImage {
-    let mut tile = RgbImage::new(w, h);
-    for y in 0..h {
-        for x in 0..w {
-            tile.put_pixel(x, y, *img.get_pixel(x0 + x, y0 + y));
+fn reflect_coord(i: i32, len: u32) -> u32 {
+    if len == 0 {
+        return 0;
+    }
+    let n = len as i32;
+    let mut x = i;
+    // Mirror reflect so edge context doesn't clamp-streak.
+    while x < 0 || x >= n {
+        if x < 0 {
+            x = -x - 1;
+        } else {
+            x = 2 * n - x - 1;
+        }
+    }
+    x as u32
+}
+
+fn extract_tile_reflect(img: &RgbImage, x0: u32, y0: u32, size: u32) -> RgbImage {
+    let (iw, ih) = img.dimensions();
+    let mut tile = RgbImage::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            let sx = reflect_coord(x0 as i32 + x as i32, iw);
+            let sy = reflect_coord(y0 as i32 + y as i32, ih);
+            tile.put_pixel(x, y, *img.get_pixel(sx, sy));
         }
     }
     tile
@@ -312,6 +408,57 @@ fn pad_tile_to_size(tile: &RgbImage, size: u32) -> RgbImage {
             let sx = x.min(w.saturating_sub(1));
             let sy = y.min(h.saturating_sub(1));
             out.put_pixel(x, y, *tile.get_pixel(sx, sy));
+        }
+    }
+    out
+}
+
+fn blend_tile_into(
+    accum: &mut [f32],
+    weight: &mut [f32],
+    out_w: u32,
+    out_h: u32,
+    tile: &RgbImage,
+    ox: u32,
+    oy: u32,
+    overlap: u32,
+) {
+    let tw = tile.width().min(out_w.saturating_sub(ox));
+    let th = tile.height().min(out_h.saturating_sub(oy));
+    for y in 0..th {
+        for x in 0..tw {
+            let wgt = blend_weight(x, y, tw, th, overlap);
+            if wgt <= 0.0 {
+                continue;
+            }
+            let p = tile.get_pixel(x, y).0;
+            let idx = ((oy + y) * out_w + (ox + x)) as usize;
+            let base = idx * 3;
+            accum[base] += p[0] as f32 * wgt;
+            accum[base + 1] += p[1] as f32 * wgt;
+            accum[base + 2] += p[2] as f32 * wgt;
+            weight[idx] += wgt;
+        }
+    }
+}
+
+fn normalize_accum(accum: &[f32], weight: &[f32], out_w: u32, out_h: u32) -> RgbImage {
+    let mut out = RgbImage::new(out_w, out_h);
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let idx = (y * out_w + x) as usize;
+            let w = weight[idx];
+            let (r, g, b) = if w > 1e-6 {
+                let base = idx * 3;
+                (
+                    (accum[base] / w).round().clamp(0.0, 255.0) as u8,
+                    (accum[base + 1] / w).round().clamp(0.0, 255.0) as u8,
+                    (accum[base + 2] / w).round().clamp(0.0, 255.0) as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            out.put_pixel(x, y, Rgb([r, g, b]));
         }
     }
     out
@@ -345,14 +492,6 @@ fn tensor_to_rgb(output: &Array4<f32>) -> RgbImage {
         }
     }
     img
-}
-
-fn paste_tile(out: &mut RgbImage, tile: &RgbImage, ox: u32, oy: u32, core_w: u32, core_h: u32) {
-    for y in 0..core_h.min(tile.height()).min(out.height().saturating_sub(oy)) {
-        for x in 0..core_w.min(tile.width()).min(out.width().saturating_sub(ox)) {
-            out.put_pixel(ox + x, oy + y, *tile.get_pixel(x, y));
-        }
-    }
 }
 
 pub fn upscale_file(
@@ -390,6 +529,27 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn tile_starts_covers_end() {
+        assert_eq!(tile_starts(100, 256, 224), vec![0]);
+        assert_eq!(tile_starts(500, 256, 224), vec![0, 224, 244]);
+        assert_eq!(tile_starts(512, 256, 224), vec![0, 224, 256]);
+    }
+
+    #[test]
+    fn blend_weight_ramps_at_edges() {
+        assert!((blend_weight(0, 50, 100, 100, 10) - 0.1).abs() < 1e-5);
+        assert!((blend_weight(50, 50, 100, 100, 10) - 1.0).abs() < 1e-5);
+        assert!(blend_weight(5, 5, 100, 100, 10) < 1.0);
+    }
+
+    #[test]
+    fn reflect_coord_mirrors() {
+        assert_eq!(reflect_coord(-1, 10), 0);
+        assert_eq!(reflect_coord(10, 10), 9);
+        assert_eq!(reflect_coord(5, 10), 5);
+    }
 
     #[test]
     fn smoke_upscale_if_model_present() {
