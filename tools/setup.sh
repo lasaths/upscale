@@ -1,10 +1,28 @@
 #!/usr/bin/env bash
 # Download ncnn-vulkan upscalers into tools/upscale/ (macOS / Linux).
+# Optional: --root <dir>  (default: repo root). Always mirrors into the user
+# data home so a PATH-installed loku binary can find engines.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$ROOT/tools/upscale"
-CACHE="$ROOT/tools/.cache"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INSTALL_ROOT="$REPO_ROOT"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root) INSTALL_ROOT="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1"; exit 1 ;;
+  esac
+done
+
+if [[ -n "${LOKU_DATA:-}" ]]; then
+  DATA_ROOT="$LOKU_DATA"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  DATA_ROOT="$HOME/Library/Application Support/loku"
+else
+  DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/loku"
+fi
+
+DEST="$INSTALL_ROOT/tools/upscale"
+CACHE="$REPO_ROOT/tools/.cache"
 mkdir -p "$CACHE" "$DEST/models"
 
 # Remove legacy renamed model dirs from older setup runs.
@@ -56,7 +74,7 @@ copy_models_dir() {
   cp -a "$src" "$DEST/models/$name"
 }
 
-echo "==> Loku ncnn setup ($PLATFORM) -> $DEST"
+echo "==> Loku ncnn setup ($PLATFORM) -> $DEST (data: $DATA_ROOT)"
 
 # --- Real-ESRGAN (v0.2.5.0) ---
 ESRGAN_ZIP="$CACHE/realesrgan-ncnn-vulkan-20220424-${PLATFORM}.zip"
@@ -169,10 +187,22 @@ if [[ "$SUGGEST_OK" -ne 1 ]]; then
   echo "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
 fi
 
+# Mirror into the user data root so PATH-installed loku finds engines.
+if [[ "$(cd "$INSTALL_ROOT" && pwd)" != "$(mkdir -p "$DATA_ROOT" && cd "$DATA_ROOT" && pwd)" ]]; then
+  DATA_DEST="$DATA_ROOT/tools/upscale"
+  echo ""
+  echo "==> Mirror engines -> $DATA_DEST"
+  rm -rf "$DATA_DEST"
+  mkdir -p "$DATA_ROOT/tools"
+  cp -a "$DEST" "$DATA_DEST"
+  echo "  mirrored"
+fi
+
 echo ""
 echo "Done. Installed:"
 ls -1 "$DEST" | grep -v models
 echo "Models:"
 ls -1 "$DEST/models"
 echo ""
+echo "Data root: $DATA_ROOT"
 echo "Run: cd ui && cargo run --release"

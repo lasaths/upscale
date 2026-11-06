@@ -155,6 +155,37 @@ fn resolve_backend(
     })
 }
 
+/// User data root for engines when Loku is installed outside the git checkout
+/// (`%LOCALAPPDATA%\loku` on Windows, Application Support / XDG elsewhere).
+pub fn data_home() -> PathBuf {
+    if let Ok(override_root) = env::var("LOKU_DATA") {
+        return PathBuf::from(override_root);
+    }
+    if cfg!(windows) {
+        if let Ok(local) = env::var("LOCALAPPDATA") {
+            return PathBuf::from(local).join("loku");
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join("Library/Application Support/loku");
+        }
+    }
+    if let Ok(xdg) = env::var("XDG_DATA_HOME") {
+        return PathBuf::from(xdg).join("loku");
+    }
+    if let Ok(home) = env::var("HOME") {
+        return PathBuf::from(home).join(".local/share/loku");
+    }
+    PathBuf::from("loku")
+}
+
+fn looks_like_root(dir: &Path) -> bool {
+    dir.join("tools/upscale").is_dir()
+        || dir.join("tools/realesrgan-full").is_dir()
+        || (dir.join("ui/Cargo.toml").is_file() && dir.join("tools").is_dir())
+}
+
 fn find_root() -> Result<PathBuf, String> {
     if let Ok(env_root) = env::var("UPSCALE_ROOT") {
         let p = PathBuf::from(env_root);
@@ -176,7 +207,7 @@ fn find_root() -> Result<PathBuf, String> {
     for start in candidates {
         let mut dir = start.as_path();
         loop {
-            if dir.join("ui/Cargo.toml").is_file() && dir.join("tools").is_dir() {
+            if looks_like_root(dir) {
                 return Ok(dir.to_path_buf());
             }
             dir = match dir.parent() {
@@ -186,7 +217,15 @@ fn find_root() -> Result<PathBuf, String> {
         }
     }
 
-    Err("[ERROR: could not find repo root] set UPSCALE_ROOT".into())
+    let data = data_home();
+    if looks_like_root(&data) {
+        return Ok(data);
+    }
+
+    Err(format!(
+        "[ERROR: could not find engines] run tools/setup.ps1 (or setup.sh), or set UPSCALE_ROOT — expected tools/upscale under the repo or {}",
+        data.display()
+    ))
 }
 
 #[cfg(test)]
@@ -261,5 +300,13 @@ mod tests {
         let suggest = suggest.expect("suggest models");
         assert_eq!(suggest.anime_real, anime_real);
         assert_eq!(suggest.anime_cls, anime_cls);
+    }
+
+    #[test]
+    fn looks_like_root_accepts_tools_upscale() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!looks_like_root(tmp.path()));
+        fs::create_dir_all(tmp.path().join("tools/upscale")).unwrap();
+        assert!(looks_like_root(tmp.path()));
     }
 }

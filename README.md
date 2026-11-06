@@ -17,12 +17,25 @@ brew install lasaths/tap/loku
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lasaths/upscale/releases/latest/download/upscale-ui-installer.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows (recommended — binary + engines + shortcuts):**
+```powershell
+irm https://raw.githubusercontent.com/lasaths/upscale/master/tools/install-windows.ps1 | iex
+```
+
+**Windows (binary only):**
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/lasaths/upscale/releases/latest/download/upscale-ui-installer.ps1 | iex"
 ```
+Then run setup once so engines land under `%LOCALAPPDATA%\loku` (see Setup).
 
-Or grab zips from [Releases](https://github.com/lasaths/upscale/releases). After install, run the setup script once to download ncnn engines (see Setup).
+**Uninstall (Windows):**
+```powershell
+& "$env:LOCALAPPDATA\loku\uninstall.ps1"
+# or from a clone:
+.\tools\install-windows.ps1 -Uninstall
+```
+
+Or grab zips from [Releases](https://github.com/lasaths/upscale/releases).
 
 > winget: not in the official catalog yet — use the PowerShell installer above for now.
 
@@ -92,11 +105,15 @@ For `realesrnet-x4plus`, also grab model files from the v0.2.3.0 ncnn zip.
 If `tools/upscale/` is missing, Loku falls back to `tools/realesrgan-full/` with
 the Real-ESRGAN binary and `models/` at that level (Real-ESRGAN only).
 
-Loku finds the repo by walking up from the executable / working directory. Override
-with:
+Loku looks for engines in this order: `UPSCALE_ROOT`, a parent of the exe /
+cwd that contains `tools/upscale`, then the user data root
+(`%LOCALAPPDATA%\loku` on Windows, `~/Library/Application Support/loku` on
+macOS, `~/.local/share/loku` on Linux). Setup mirrors engines into that data
+root so a PATH-installed `loku` works without the git checkout.
 
 ```powershell
-$env:UPSCALE_ROOT = "C:\path\to\upscale"
+$env:UPSCALE_ROOT = "C:\path\to\upscale"   # optional override
+$env:LOKU_DATA = "D:\loku-data"            # optional data-root override
 ```
 
 ## Build & run
@@ -203,7 +220,8 @@ For those, use ComfyUI or the upstream Python projects.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `UPSCALE_ROOT` | (auto) | Override repo-root detection. |
+| `UPSCALE_ROOT` | (auto) | Override root detection (must contain `tools/upscale`). |
+| `LOKU_DATA` | `%LOCALAPPDATA%\loku` (Windows) | User data root for engines when installed via cargo-dist. |
 | `UPSCALE_GPU` | `1` (Windows), `0` (macOS) | GPU device id passed to backends (`-g`). |
 
 ## License

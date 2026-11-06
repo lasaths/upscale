@@ -1,9 +1,16 @@
 # Download ncnn-vulkan upscalers into tools/upscale/ (Windows).
+# Also mirrors into %LOCALAPPDATA%\loku so an installed loku.exe (cargo-dist) finds engines.
+param(
+    [string]$InstallRoot = ""
+)
+
 $ErrorActionPreference = "Stop"
 
-$Root = Split-Path -Parent $PSScriptRoot
-$Dest = Join-Path $Root "tools\upscale"
-$Cache = Join-Path $Root "tools\.cache"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $InstallRoot) { $InstallRoot = $RepoRoot }
+$DataRoot = if ($env:LOKU_DATA) { $env:LOKU_DATA } else { Join-Path $env:LOCALAPPDATA "loku" }
+$Dest = Join-Path $InstallRoot "tools\upscale"
+$Cache = Join-Path $RepoRoot "tools\.cache"
 New-Item -ItemType Directory -Force -Path $Dest, (Join-Path $Dest "models"), $Cache | Out-Null
 
 function Fetch($Url, $Out) {
@@ -136,7 +143,18 @@ try {
     Install-SuggestModel "anime_cls.onnx" `
         "https://huggingface.co/deepghs/anime_classification/resolve/main/mobilenetv3_v1.5_dist/model.onnx"
 } catch {
-    Write-Host "  [warn] suggest classifier download failed — SUGGEST button will be disabled"
+    Write-Host "  [warn] suggest classifier download failed - SUGGEST button will be disabled"
+}
+
+# Mirror into the user data root so PATH-installed loku finds engines.
+if ((Resolve-Path $InstallRoot).Path -ne (Resolve-Path (New-Item -ItemType Directory -Force -Path $DataRoot)).Path) {
+    $DataDest = Join-Path $DataRoot "tools\upscale"
+    Write-Host ""
+    Write-Host "==> Mirror engines -> $DataDest"
+    if (Test-Path $DataDest) { Remove-Item -Recurse -Force $DataDest }
+    New-Item -ItemType Directory -Force -Path (Split-Path $DataDest) | Out-Null
+    Copy-Item $Dest $DataDest -Recurse -Force
+    Write-Host "  mirrored"
 }
 
 Write-Host ""
@@ -145,4 +163,5 @@ Get-ChildItem $Dest -File | ForEach-Object { $_.Name }
 Write-Host "Models:"
 Get-ChildItem (Join-Path $Dest "models") -Directory | ForEach-Object { $_.Name }
 Write-Host ""
+Write-Host "Data root: $DataRoot"
 Write-Host "Run: cd ui; cargo run --release"
