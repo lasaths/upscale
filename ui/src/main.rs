@@ -1,3 +1,6 @@
+// GUI app — hide the console Windows opens for console-subsystem binaries.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod drop;
 mod icons;

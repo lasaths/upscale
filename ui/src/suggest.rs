@@ -67,12 +67,18 @@ pub struct SuggestedSettings {
     pub detail: &'static str,
     pub confidence: f32,
     pub low_confidence: bool,
+    /// Set when the suggestion targets an ONNX file under models/onnx/.
+    pub onnx_model: Option<PathBuf>,
 }
 
 impl SuggestedSettings {
     pub fn status_line(&self) -> String {
         let engine = self.algorithm.label();
-        let model = variant_short_label(self.variant);
+        let model = self
+            .onnx_model
+            .as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| variant_short_label(self.variant).to_string());
         let detected = if self.detail == self.class.label() {
             self.class.label().to_string()
         } else {
@@ -274,9 +280,11 @@ fn softmax_argmax(logits: &[f32]) -> (usize, f32) {
 pub fn suggest_settings(
     result: &ClassifyResult,
     backends: &BackendPaths,
+    onnx_models: &[PathBuf],
 ) -> Result<SuggestedSettings, String> {
-    let (algorithm, variant, denoise) = pick_preset(result.class, backends)?;
-    let scale = suggest_scale(result.class, result.width, result.height, algorithm);
+    let (algorithm, variant, denoise, onnx_model) =
+        pick_preset(result.class, result.detail, backends, onnx_models)?;
+    let scale = suggest_scale(result.class, result.detail, result.width, result.height, algorithm);
     Ok(SuggestedSettings {
         algorithm,
         variant,
@@ -286,55 +294,160 @@ pub fn suggest_settings(
         detail: result.detail,
         confidence: result.confidence,
         low_confidence: result.confidence < CONFIDENCE_SOFT,
+        onnx_model,
     })
+}
+
+/// Prefer ONNX files whose stem contains any of `needles` (case-insensitive).
+fn pick_onnx(models: &[PathBuf], needles: &[&str]) -> Option<PathBuf> {
+    for needle in needles {
+        let n = needle.to_ascii_lowercase();
+        if let Some(p) = models.iter().find(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.to_ascii_lowercase().contains(&n))
+        }) {
+            return Some(p.clone());
+        }
+    }
+    None
 }
 
 fn pick_preset(
     class: ContentClass,
+    detail: &str,
     backends: &BackendPaths,
-) -> Result<(Algorithm, Variant, DenoiseLevel), String> {
+    onnx_models: &[PathBuf],
+) -> Result<(Algorithm, Variant, DenoiseLevel, Option<PathBuf>), String> {
     match class {
         ContentClass::Anime => {
-            if backends.realesrgan.is_some() {
-                Ok((
-                    Algorithm::RealEsrgan,
-                    Variant::RealEsrgan(RealEsrganModel::AnimeV3),
-                    DenoiseLevel::Zero,
-                ))
-            } else if backends.realcugan.is_some() {
-                Ok((
-                    Algorithm::RealCugan,
-                    Algorithm::RealCugan.default_variant(),
-                    DenoiseLevel::Minus1,
-                ))
-            } else if backends.waifu2x.is_some() {
-                Ok((
-                    Algorithm::Waifu2x,
-                    Variant::Waifu2x(Waifu2xModel::Cunet),
-                    DenoiseLevel::Zero,
-                ))
-            } else {
-                Err("[ERROR: no anime-capable engine installed]".into())
+            // bangumi = anime video frames → CUGAN / animev3
+            // illustration = still art → x4-anime / CUGAN
+            // comic = manga/panels → waifu2x or CUGAN, light denoise
+            match detail {
+                "bangumi" => {
+                    if backends.realcugan.is_some() {
+                        Ok((
+                            Algorithm::RealCugan,
+                            Algorithm::RealCugan.default_variant(),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else if backends.realesrgan.is_some() {
+                        Ok((
+                            Algorithm::RealEsrgan,
+                            Variant::RealEsrgan(RealEsrganModel::AnimeV3),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else if backends.waifu2x.is_some() {
+                        Ok((
+                            Algorithm::Waifu2x,
+                            Variant::Waifu2x(Waifu2xModel::Cunet),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else {
+                        Err("[ERROR: no anime-capable engine installed]".into())
+                    }
+                }
+                "comic" => {
+                    if backends.waifu2x.is_some() {
+                        Ok((
+                            Algorithm::Waifu2x,
+                            Variant::Waifu2x(Waifu2xModel::Cunet),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else if backends.realcugan.is_some() {
+                        Ok((
+                            Algorithm::RealCugan,
+                            Algorithm::RealCugan.default_variant(),
+                            DenoiseLevel::Minus1,
+                            None,
+                        ))
+                    } else if backends.realesrgan.is_some() {
+                        Ok((
+                            Algorithm::RealEsrgan,
+                            Variant::RealEsrgan(RealEsrganModel::X4PlusAnime),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else {
+                        Err("[ERROR: no anime-capable engine installed]".into())
+                    }
+                }
+                _ => {
+                    // illustration (default anime)
+                    if backends.realesrgan.is_some() {
+                        Ok((
+                            Algorithm::RealEsrgan,
+                            Variant::RealEsrgan(RealEsrganModel::X4PlusAnime),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else if backends.realcugan.is_some() {
+                        Ok((
+                            Algorithm::RealCugan,
+                            Algorithm::RealCugan.default_variant(),
+                            DenoiseLevel::Minus1,
+                            None,
+                        ))
+                    } else if backends.waifu2x.is_some() {
+                        Ok((
+                            Algorithm::Waifu2x,
+                            Variant::Waifu2x(Waifu2xModel::Cunet),
+                            DenoiseLevel::Zero,
+                            None,
+                        ))
+                    } else {
+                        Err("[ERROR: no anime-capable engine installed]".into())
+                    }
+                }
             }
         }
         ContentClass::Photo => {
+            // Prefer newer ONNX defaults when present: PurePhoto for real photos,
+            // UltraSharp for mixed / 3d / not_painting.
+            let onnx = match detail {
+                "real" => pick_onnx(onnx_models, &["purephoto", "ultrasharp"]),
+                _ => pick_onnx(onnx_models, &["ultrasharp", "purephoto"]),
+            };
+            if let Some(path) = onnx {
+                return Ok((
+                    Algorithm::Onnx,
+                    Algorithm::Onnx.default_variant(),
+                    DenoiseLevel::Zero,
+                    Some(path),
+                ));
+            }
             if backends.realesrgan.is_some() {
                 Ok((
                     Algorithm::RealEsrgan,
                     Variant::RealEsrgan(RealEsrganModel::X4Plus),
                     DenoiseLevel::Zero,
+                    None,
                 ))
             } else if backends.realsr.is_some() {
                 Ok((
                     Algorithm::RealSr,
                     Algorithm::RealSr.default_variant(),
                     DenoiseLevel::Zero,
+                    None,
                 ))
             } else if backends.waifu2x.is_some() {
                 Ok((
                     Algorithm::Waifu2x,
                     Variant::Waifu2x(Waifu2xModel::UpconvPhoto),
                     DenoiseLevel::Zero,
+                    None,
+                ))
+            } else if let Some(path) = onnx_models.first() {
+                Ok((
+                    Algorithm::Onnx,
+                    Algorithm::Onnx.default_variant(),
+                    DenoiseLevel::Zero,
+                    Some(path.clone()),
                 ))
             } else {
                 Err("[ERROR: no photo-capable engine installed]".into())
@@ -343,16 +456,28 @@ fn pick_preset(
     }
 }
 
-pub fn suggest_scale(class: ContentClass, width: u32, height: u32, algorithm: Algorithm) -> u8 {
+pub fn suggest_scale(
+    class: ContentClass,
+    detail: &str,
+    width: u32,
+    height: u32,
+    algorithm: Algorithm,
+) -> u8 {
     let max_edge = width.max(height);
     let preferred = if max_edge < 512 {
         4
     } else if max_edge < 1024 {
-        3
+        // Comic panels / bangumi frames at mid-res usually want 2× (waifu2x has no 3×).
+        if detail == "comic" || detail == "bangumi" {
+            2
+        } else {
+            3
+        }
     } else {
         match class {
             ContentClass::Anime => 2,
-            ContentClass::Photo => 4,
+            // Large photos: 2× keeps files sane; ONNX/ESRGAN still look sharp.
+            ContentClass::Photo => 2,
         }
     };
     algorithm.clamp_scale(preferred)
@@ -383,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn anime_prefers_esrgan_animev3() {
+    fn illustration_prefers_x4_anime() {
         let b = backends_with(&[Algorithm::RealEsrgan, Algorithm::Waifu2x]);
         let r = ClassifyResult {
             class: ContentClass::Anime,
@@ -392,12 +517,52 @@ mod tests {
             width: 400,
             height: 400,
         };
-        let s = suggest_settings(&r, &b).unwrap();
+        let s = suggest_settings(&r, &b, &[]).unwrap();
         assert_eq!(s.algorithm, Algorithm::RealEsrgan);
-        assert_eq!(s.variant, Variant::RealEsrgan(RealEsrganModel::AnimeV3));
+        assert_eq!(s.variant, Variant::RealEsrgan(RealEsrganModel::X4PlusAnime));
         assert_eq!(s.scale, 4);
         assert!(!s.low_confidence);
         assert!(s.status_line().contains("illustration"));
+    }
+
+    #[test]
+    fn bangumi_prefers_cugan() {
+        let b = backends_with(&[Algorithm::RealCugan, Algorithm::RealEsrgan]);
+        let r = ClassifyResult {
+            class: ContentClass::Anime,
+            detail: "bangumi",
+            confidence: 0.92,
+            width: 1280,
+            height: 720,
+        };
+        let s = suggest_settings(&r, &b, &[]).unwrap();
+        assert_eq!(s.algorithm, Algorithm::RealCugan);
+        assert_eq!(s.scale, 2);
+    }
+
+    #[test]
+    fn photo_prefers_onnx_purephoto() {
+        let b = backends_with(&[Algorithm::RealEsrgan]);
+        let onnx = vec![
+            PathBuf::from("models/onnx/4x-UltraSharpV2.onnx"),
+            PathBuf::from("models/onnx/4xPurePhoto-RealPLSKR.onnx"),
+        ];
+        let r = ClassifyResult {
+            class: ContentClass::Photo,
+            detail: "real",
+            confidence: 0.99,
+            width: 800,
+            height: 600,
+        };
+        let s = suggest_settings(&r, &b, &onnx).unwrap();
+        assert_eq!(s.algorithm, Algorithm::Onnx);
+        assert!(s
+            .onnx_model
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .contains("PurePhoto"));
+        assert_eq!(s.scale, 4); // ONNX only supports 4×
     }
 
     #[test]
@@ -410,9 +575,9 @@ mod tests {
             width: 800,
             height: 600,
         };
-        let s = suggest_settings(&r, &b).unwrap();
+        let s = suggest_settings(&r, &b, &[]).unwrap();
         assert_eq!(s.algorithm, Algorithm::RealSr);
-        assert_eq!(s.scale, 4);
+        assert_eq!(s.scale, 4); // RealSR only 4×
     }
 
     #[test]
@@ -425,30 +590,37 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        let s = suggest_settings(&r, &b).unwrap();
+        let s = suggest_settings(&r, &b, &[]).unwrap();
         assert!(s.low_confidence);
         assert!(s.status_line().starts_with("Low confidence"));
+        assert_eq!(s.scale, 2);
     }
 
     #[test]
     fn scale_heuristic_large_anime_is_2x() {
         assert_eq!(
-            suggest_scale(ContentClass::Anime, 1600, 900, Algorithm::RealEsrgan),
+            suggest_scale(
+                ContentClass::Anime,
+                "illustration",
+                1600,
+                900,
+                Algorithm::RealEsrgan
+            ),
             2
         );
     }
 
     #[test]
-    fn scale_heuristic_mid_clamps_for_waifu2x() {
+    fn scale_heuristic_mid_comic_waifu2x_is_2x() {
         assert_eq!(
-            suggest_scale(ContentClass::Anime, 800, 800, Algorithm::Waifu2x),
-            4
+            suggest_scale(ContentClass::Anime, "comic", 800, 800, Algorithm::Waifu2x),
+            2
         );
     }
 
     #[test]
-    fn anime_fallback_cugan_denoise() {
-        let b = backends_with(&[Algorithm::RealCugan]);
+    fn comic_prefers_waifu2x() {
+        let b = backends_with(&[Algorithm::Waifu2x, Algorithm::RealCugan]);
         let r = ClassifyResult {
             class: ContentClass::Anime,
             detail: "comic",
@@ -456,10 +628,9 @@ mod tests {
             width: 300,
             height: 300,
         };
-        let s = suggest_settings(&r, &b).unwrap();
-        assert_eq!(s.algorithm, Algorithm::RealCugan);
-        assert_eq!(s.denoise, DenoiseLevel::Minus1);
-        assert!(s.status_line().contains("denoise"));
+        let s = suggest_settings(&r, &b, &[]).unwrap();
+        assert_eq!(s.algorithm, Algorithm::Waifu2x);
+        assert_eq!(s.variant, Variant::Waifu2x(Waifu2xModel::Cunet));
     }
 
     #[test]

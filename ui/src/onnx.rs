@@ -264,9 +264,22 @@ fn register_execution_providers(
     if uses_external_weights(model_path) {
         return Ok(builder);
     }
-    use ort::execution_providers::DirectMLExecutionProvider;
+    use ort::ep::directml::{DeviceFilter, PerformancePreference};
+    use ort::ep::DirectML;
+
+    // Prefer Windows' high-performance GPU (usually the discrete card). Explicit
+    // UPSCALE_GPU still forces a DXGI adapter index for troubleshooting.
+    let ep = if let Ok(raw) = std::env::var("UPSCALE_GPU") {
+        let device_id: i32 = raw.parse().unwrap_or(0);
+        DirectML::default().with_device_id(device_id).build()
+    } else {
+        DirectML::default()
+            .with_device_filter(DeviceFilter::Gpu)
+            .with_performance_preference(PerformancePreference::HighPerformance)
+            .build()
+    };
     builder
-        .with_execution_providers([DirectMLExecutionProvider::default().with_device_id(0).build()])
+        .with_execution_providers([ep])
         .map_err(|e| format!("[ERROR: DirectML EP] {e}"))
 }
 

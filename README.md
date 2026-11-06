@@ -222,7 +222,7 @@ For those, use ComfyUI or the upstream Python projects.
 |----------|---------|---------|
 | `UPSCALE_ROOT` | (auto) | Override root detection (must contain `tools/upscale`). |
 | `LOKU_DATA` | `%LOCALAPPDATA%\loku` (Windows) | User data root for engines when installed via cargo-dist. |
-| `UPSCALE_GPU` | `1` (Windows), `0` (macOS) | GPU device id passed to backends (`-g`). |
+| `UPSCALE_GPU` | ncnn: `1` (Windows) / `0` (macOS); ONNX: auto | ncnn Vulkan device id (`-g`). For ONNX/DirectML, leave unset to auto-pick the high-performance GPU; set to force a DXGI adapter index. |
 
 ## License
 

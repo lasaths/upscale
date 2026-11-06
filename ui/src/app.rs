@@ -119,7 +119,10 @@ impl UpscaleApp {
             && self
                 .paths
                 .as_ref()
-                .is_ok_and(|p| p.suggest_available() && p.backends.any_available())
+                .is_ok_and(|p| {
+                    p.suggest_available()
+                        && (p.backends.any_available() || p.onnx_available())
+                })
     }
 
     fn clear_suggest_status(&mut self) {
@@ -144,6 +147,7 @@ impl UpscaleApp {
         };
         let image = item.input.clone();
         let backends = paths.backends.clone();
+        let onnx_models = paths.onnx_models.clone();
 
         let (tx, rx) = mpsc::channel();
         self.suggest_rx = Some(rx);
@@ -151,8 +155,9 @@ impl UpscaleApp {
         self.suggest_status_ttl = 0.0;
 
         thread::spawn(move || {
-            let result = suggest::classify(&models, &image)
-                .and_then(|classified| suggest::suggest_settings(&classified, &backends));
+            let result = suggest::classify(&models, &image).and_then(|classified| {
+                suggest::suggest_settings(&classified, &backends, &onnx_models)
+            });
             let _ = tx.send(result);
         });
     }
@@ -188,6 +193,17 @@ impl UpscaleApp {
             self.denoise = settings.denoise;
         } else {
             self.denoise = settings.algorithm.default_denoise();
+        }
+        if let Some(ref want) = settings.onnx_model {
+            if let Ok(paths) = self.paths.as_ref() {
+                if let Some(idx) = paths.onnx_models.iter().position(|p| p == want) {
+                    self.onnx_model_idx = idx;
+                } else if let Some(idx) = paths.onnx_models.iter().position(|p| {
+                    p.file_name() == want.file_name()
+                }) {
+                    self.onnx_model_idx = idx;
+                }
+            }
         }
         self.suggest_status = Some(settings.status_line());
         self.suggest_status_ttl = 4.0;
